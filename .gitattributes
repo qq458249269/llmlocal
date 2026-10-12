@@ -1,0 +1,12 @@
+# 仓库里统一存 LF。
+# 理由：.sh（dl.sh / ctxsweep.sh / tbench.sh）在 Windows 上被 checkout 成 CRLF 后
+# bash 会报 $'\r': command not found —— 权重下载器直接报废。
+# .cmd 同样是 LF 且实测能跑（Windows 10 19044 / cmd.exe），所以不搞特殊处理。
+* text=auto eol=lf
+
+# 二进制：永不转换
+*.gguf binary
+*.atlas binary
+*.png binary
+*.jpg binary
+*.safetensors binary
