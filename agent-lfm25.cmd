@@ -6,6 +6,11 @@ rem
 rem  PICK=fast    LFM2.5-1.2B-Instruct Q4_K_M   0.68 GiB   ~19-24 t/s
 rem  PICK=quality LFM2.5-2.6B        Q4_K_M   1.63 GiB   ~10 t/s
 rem
+rem  NOTE: for the 2.6B just use agent-lfm26.cmd instead. It is the
+rem  same model on the same port, as a standalone script, so you do
+rem  not have to edit PICK here and forget. Measured: the 1.2B drops
+rem  the file name from the path argument, the 2.6B does not.
+rem
 rem  WHY THIS FAMILY: post-trained for agentic tool use, returns native
 rem  OpenAI tool_calls. The arch is lfm2: 30 layers of which only 8 are GQA
 rem  attention, the other 22 are 3-token short convolutions that use NO KV

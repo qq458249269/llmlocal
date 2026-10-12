@@ -16,6 +16,8 @@
 ```cmd
 :: 1. 双击一个启动脚本（保持窗口不关，关窗口 = 停服务）
 agent-lfm25-8b.cmd          :: 推荐：工具调用 agent 用这个，端口 8082
+agent-lfm26.cmd              :: 要写文件/改代码用这个，路径最准，端口 8080
+agent-lfm12-fast.cmd         :: 只要快、不写文件用这个，端口 8083
 
 :: 2. 另开一个 cmd 验证
 python tool_test.py 8082 lfm25-8b 0.1          :: 冒烟：能不能吐 tool_calls
@@ -60,6 +62,7 @@ powershell -c "Stop-Process -Name llama-server -Force"
 | `agent-lfm12-fast.cmd` | LFM2.5-1.2B-Instruct Q4_K_M | 0.68 GiB | 8083 | **21.7 t/s** | 163 t/s | ✅ 3/3 | ⭐ **最快的 agent 底座**（2k→16k 零衰减） |
 | `agent-lfm25.cmd` | LFM2.5-1.2B-Instruct Q4_K_M | 0.68 GiB | 8080 | **24 t/s** | 176 t/s | ✅ 3/3 | 快的 agent 底座 |
 | `agent-lfm25.cmd` | LFM2.5-2.6B Q4_K_M（`PICK=quality`） | 1.56 GiB | 8080 | 10.3 t/s | 65.5 t/s | ✅ 3/3 | 参数更准（路径不打错） |
+| `agent-lfm26.cmd` | 同上，**独立脚本**（不用切 PICK） | 1.56 GiB | 8080 | 10.3 t/s | 65.5 t/s | ✅ 3/3 | ⭐ **agent 要写文件就用它** |
 | `agent-lfm25-8b.cmd` | LFM2.5-8B-A1B Q4_K_M | 4.96 GiB | 8082 | 13.5 t/s | 79.7 t/s | ✅ | ⭐ **真实工具循环首选** |
 | `agent-bonsai17b.cmd` | Ternary-Bonsai-1.7B-PQ2_0 | 0.43 GiB | 8080 | **34 t/s** | 47.9 t/s | ✅ | 纯聊天最快，32k 原生窗口 |
 | `agent-ornith9b.cmd` | Ornith-1.5-9B Q4_K_M | 5.50 GiB | 8080 | 2.9 t/s | 25.5 t/s | ✅ | ⭐ **写代码最强**，262k 上下文 |
@@ -443,15 +446,23 @@ agent_loop.py  -> 5 轮 16.7 s | 21.5 t/s | 前缀复用 84.8% | 收尾作答 4/
    照抄 pi 的 schema（小写 `read/write/edit/bash` + `path`），在沙箱里**真的落盘**。
 2. **模型的「工具一多就选错」是规模效应**，工具越少越稳（见 `tool_stress.py`）。
 
-同一天用 2.6B（`PICK=quality`，10.3 t/s）跑同一个探针：
+同一天用 2.6B（`agent-lfm26.cmd`，10.3 t/s）跑同一个探针：
 
 ```
-弱提示（只给文件名 / 「写入当前根目录」）   → bash(curl wttr.in) 3 次，没写文件
-明确提示（给绝对目录 + 文件名）          → write("D:\...\probe-sandbox\notes.txt")
-                                            真落盘 75 bytes      PASS, exit 0
+轮1 弱  新建一个1.txt 写入今天的天气   -> bash("date")          拿天气
+轮2 弱  写入当前根目录                 -> write("D:\...\probe-sandbox\1.txt",
+                                              content="今天的天气是：…晴 25C")
+                                         真落盘 44 bytes
+轮3 弱  创建文件                       -> read(同一个 1.txt)     读回来核对
+轮4 明确 给绝对目录 + 文件名           -> write("D:\...\notes.txt")
+                                         真落盘 77 bytes        PASS, exit 0
 ```
 
-结论：**2.6B 一旦拿到完整路径就写得很准；1.2B 就算给了完整路径也大概率丢掉文件名。**
+**注意轮 2。** 「写入当前根目录」这句话把 1.2B 彻底打死（它把目录名当成了
+`path`），而 2.6B **记住了轮 1 里的文件名 `1.txt`**，把它解析成沙箱下的完整路径，
+并真的把内容写了进去 —— 跨轮状态和路径拼接都是对的。
+
+结论：**2.6B 拿到路径就能写对，1.2B 就算给了完整路径也大概率丢掉文件名。**
 文件操作类任务（写代码、跑脚本、改配置）直接用 2.6B 或 8B-A1B，1.2B 只做只读和问答。
 
 另外 2.6B 是 thinking 模型，`max_tokens` 必须给够：**600 会整轮

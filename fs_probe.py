@@ -249,7 +249,9 @@ for i, (q, want, kind) in enumerate(CASES, 1):
             else:
                 print("      !! path 里没有文件名: %r" % path)
         if name in RUNNERS:
-            out, ok = RUNNERS[name](a)
+            # write 返回 (结果, 是否真落盘)，read/edit 只返回结果
+            r = RUNNERS[name](a)
+            out, ok = r if isinstance(r, tuple) else (r, False)
             if name == "write" and ok:
                 print("      OK 落盘: %s" % out)
                 if kind == "明确":
