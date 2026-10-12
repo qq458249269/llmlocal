@@ -1,0 +1,54 @@
+{%- if tools %}
+    {{- 'system\n' }}
+    {%- if messages[0]['role'] == 'system' %}
+        {{- messages[0]['content'] }}
+    {%- else %}
+        {{- 'You are a helpful assistant.' }}
+    {%- endif %}
+    {{- "\n\n# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>" }}
+    {%- for tool in tools %}
+        {{- "\n" }}
+        {{- tool | tojson }}
+    {%- endfor %}
+    {{- "\n</tools>\n\n## 调用规则（必须严格遵守，否则无法执行）\n1. 需要外部信息或执行动作时，只输出下面这一种 XML，除此之外不要输出任何文字：\n<tool_call>\n{\"name\": \"工具名\", \"arguments\": {\"参数名\": \"参数值\"}}\n</tool_call>\n2. arguments 里必须填上工具 schema 要求的全部必填参数，值直接照抄用户给的内容，不要改写。\n3. 不要调用工具时，直接用中文回答，不要输出任何 XML。\n\n## 示例\n用户：帮我查一下上海的天气，用摄氏度\n助手：<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"上海\", \"unit\": \"c\"}}\n</tool_call>\n\n用户：用一句话解释什么是向量数据库。\n助手：向量数据库是存储和检索高维向量的数据库，用相似度搜索而不是精确匹配。\n" }}
+{%- else %}
+    {%- if messages[0]['role'] == 'system' %}
+        {{- 'system\n' + messages[0]['content'] + '\n' }}
+    {%- else %}
+        {{- 'system\nYou are a helpful assistant.\n' }}
+    {%- endif %}
+{%- endif %}
+{%- for message in messages %}
+    {%- if (message.role == "user") or (message.role == "system" and not loop.first) or (message.role == "assistant" and not message.tool_calls) %}
+        {{- '' + message.role + '\n' + message.content + '' + '\n' }}
+    {%- elif message.role == "assistant" %}
+        {{- '' + message.role }}
+        {%- if message.content %}
+            {{- '\n' + message.content }}
+        {%- endif %}
+        {%- for tool_call in message.tool_calls %}
+            {%- if tool_call.function is defined %}
+                {%- set tool_call = tool_call.function %}
+            {%- endif %}
+            {{- '\n<tool_call>\n{"name": "' }}
+            {{- tool_call.name }}
+            {{- '", "arguments": ' }}
+            {{- tool_call.arguments | tojson }}
+            {{- '}\n</tool_call>' }}
+        {%- endfor %}
+        {{- '\n' }}
+    {%- elif message.role == "tool" %}
+        {%- if (loop.index0 == 0) or (messages[loop.index0 - 1].role != "tool") %}
+            {{- 'user' }}
+        {%- endif %}
+        {{- '\n<tool_response>\n' }}
+        {{- message.content }}
+        {{- '\n</tool_response>' }}
+        {%- if loop.last or (messages[loop.index0 + 1].role != "tool") %}
+            {{- '\n' }}
+        {%- endif %}
+    {%- endif %}
+{%- endfor %}
+{%- if add_generation_prompt %}
+    {{- 'assistant\n' }}
+{%- endif %}

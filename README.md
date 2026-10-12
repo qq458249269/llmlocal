@@ -18,6 +18,7 @@
 agent-lfm25-8b.cmd          :: 推荐：工具调用 agent 用这个，端口 8082
 agent-lfm26.cmd              :: 要写文件/改代码用这个，路径最准，端口 8080
 agent-lfm12-fast.cmd         :: 只要快、不写文件用这个，端口 8083
+agent-sakthai.cmd            :: 最快的只读/问答底座（35.7 t/s），端口 8084
 
 :: 2. 另开一个 cmd 验证
 python tool_test.py 8082 lfm25-8b 0.1          :: 冒烟：能不能吐 tool_calls
@@ -47,7 +48,7 @@ powershell -c "Stop-Process -Name llama-server -Force"
 | 工具链 | Python 3.14.5 · Git 2.55.0 | 打印中文需要 `PYTHONIOENCODING=utf-8` |
 | 空闲内存 | 实测 3.5–8.5 GiB 波动 | 所以每个启动脚本都现场跑 `llama-plan.ps1` 降级 |
 
-**换机器时必须重测的三件事**：`llama-bench -p 2048`（**不带 `-p` 的 tg 是假数据**）、
+**换机器时必须重测的三件事**：`llama-bench -p 2048`（**`-p 0` 的 tg 只在部分模型上可信**，见 6）、
 `llama-plan.ps1 -Size lfm12 -Ctx 16384`（planner 有按模型编的峰值表）、
 `fs_probe.py`（换模型或换 harness 后工具保真度可能完全变样）。
 本仓库里没有一条性能数字是抄来的，全部来自上面这台机器。
@@ -58,7 +59,8 @@ powershell -c "Stop-Process -Name llama-server -Force"
 
 | 启动脚本 | 模型 | 权重 | 端口 | 生成 | 预填充 | 工具调用 | 定位 |
 |---|---|---|---|---|---|---|---|
-| `agent-minicpm5-1b.cmd` | MiniCPM5-1B Q4_K_M | 0.64 GiB | 8081 | **26.8 t/s** | 215 t/s | ❌ 拒绝 | 最快；起草/摘要/长上下文预热 |
+| `agent-sakthai.cmd` | SakThai Context 0.5B Q4_K_M | 0.37 GiB | 8084 | **35.7 t/s** | 213 t/s | ✅ 3/3 | ⚠️ **最快**，但只能只读/问答（见 4.16） |
+| `agent-minicpm5-1b.cmd` | MiniCPM5-1B Q4_K_M | 0.64 GiB | 8081 | **26.8 t/s** | 215 t/s | ❌ 拒绝 | 起草/摘要/长上下文预热 |
 | `agent-lfm12-fast.cmd` | LFM2.5-1.2B-Instruct Q4_K_M | 0.68 GiB | 8083 | **21.7 t/s** | 163 t/s | ✅ 3/3 | ⭐ **最快的 agent 底座**（2k→16k 零衰减） |
 | `agent-lfm25.cmd` | LFM2.5-1.2B-Instruct Q4_K_M | 0.68 GiB | 8080 | **24 t/s** | 176 t/s | ✅ 3/3 | 快的 agent 底座 |
 | `agent-lfm25.cmd` | LFM2.5-2.6B Q4_K_M（`PICK=quality`） | 1.56 GiB | 8080 | 10.3 t/s | 65.5 t/s | ✅ 3/3 | 参数更准（路径不打错） |
@@ -68,6 +70,10 @@ powershell -c "Stop-Process -Name llama-server -Force"
 | `agent-ornith9b.cmd` | Ornith-1.5-9B Q4_K_M | 5.50 GiB | 8080 | 2.9 t/s | 25.5 t/s | ✅ | ⭐ **写代码最强**，262k 上下文 |
 | `agent-qwen7b.cmd` | Qwen2.5-Coder-7B Q4_K_M | 4.36 GiB | 8080 | 3.9 t/s | 26.4 t/s | ❌ 退化成纯文本 | 快 11% 但工具调用废了 |
 | `agent-bonsai8b.cmd` | Ternary-Bonsai-8B（模型未下载） | — | 8080 | 8.2 t/s | — | — | 已被 8B-A1B 取代 |
+
+> SakThai 0.5B 的 35.7 t/s 是**短上下文**实测值；它的 KV 是 24 层全存（12 KiB/token），
+> 8k 掉到 17.9、16k 掉到 9.7，比 LFM2.5-1.2B（2k→16k 零衰减）衰减快得多。
+> 「生成」列一律是短上下文的数字，长对话请查 4.6 的曲线。
 
 **真实 agent 前缀端到端**（`agent_loop.py --warm`，含 system + 3 工具）：
 
@@ -82,6 +88,9 @@ powershell -c "Stop-Process -Name llama-server -Force"
 
 - **只要快 + 要调工具** → `agent-lfm12-fast.cmd`（端口 8083）。decode 21.7 t/s 且
   **2k→16k 零衰减**，16k 上下文只占 1.2 GiB，5 轮循环 16.7 s。
+- **只要快，不管工具准度** → `agent-sakthai.cmd`（端口 8084，35.7 t/s，397 MB）。
+  快 1.6 倍，但 `fs_probe.py` 明确轮 FAIL，会凭空编 `/home/user/x.txt`，
+  且**不会自己停**。只读查询 / 分类 / 摘要可以用，见 4.16。
 - **工具调用 agent，且需要 8B 级知识** → `agent-lfm25-8b.cmd`。8.47B 总参但每 token
   只激活 1.5B，速度像 1.5B，知识像 8B。代价是 decode 慢 1.6×（21.7 → 13.8 t/s）。
 - **agent 要写真代码** → `agent-ornith9b.cmd`（SWE-bench Verified 70.6），
@@ -93,7 +102,6 @@ powershell -c "Stop-Process -Name llama-server -Force"
 
 ## 3. 目录结构
 
-```
 LLMlocal/
 ├─ README.md                    ← 本文件（总入口）
 ├─ README-lfm25.md              ← LFM2.5 家族详解（工具调用、采样参数、thinking 坑）
@@ -110,11 +118,21 @@ LLMlocal/
 ├─ tool_test.py                 ← 3 用例 tool_calls 冒烟（退出码 0/1）
 ├─ tool_stress.py               ← N 工具压力测试，定位「工具一多就选错」的拐点
 ├─ fs_probe.py                  ← 写文件能力探针（沙箱真落盘，退出码 0/1）
-├─ bench_decode.py              ← decode 速度 vs 上下文长度曲线
+├─ bench_decode.py              ← decode 速度 vs 上下文长度曲线（旧，差分法）
+├─ bench_ctx2.py                ← 同上，但直接读 server 端 timings（**优先用这个**）
+├─ ctxtune.sh                   ← 长上下文下批量对比 KV 量化 / 线程 / fa / mlock
 ├─ cache_test.py / ttft_test.py ← 前缀复用率 / 首字延迟
 ├─ kvcalc.py                    ← 读 GGUF 元数据算 KV cache 占用
 ├─ ctxsweep.sh / tbench.sh      ← decode vs 上下文 / vs 线程数 批量测试
 ├─ dl.sh                        ← GGUF 下载器（魔搭→hf-mirror→HF，多路分片 + 校验）
+│
+├─ sak_template.jinja           ← SakThai 0.5B 的严格版 chat template（**必挂**，见 4.16）
+├─ sakstart.sh                  ← SakThai 一次性测试启动器
+├─ sak_qa.py                    ← 中文问答/代码分析质量（不给工具）
+├─ sak_eval.py                  ← 工具调用 + 中文分析 4 用例，带 stop 对照
+├─ sak_oneshot.py               ← one-shot 能否把格式合规率救回来
+├─ sak_forced.py                ← tool_choice 指定函数时的 grammar 约束路径
+├─ raw_probe.py                 ← 看模型吐的原始文本（绕过 tool_call 解析器）
 │
 ├─ models/                      ← 所有 GGUF（35 GB，统一平铺，不分子目录；**不入库**）
 ├─ Bonsai-demo/                 ← 上游 repo（PrismML-Eng/Bonsai-demo，**不入库**）
@@ -123,7 +141,6 @@ LLMlocal/
 ├─ llama-cpp-src/               ← llama.cpp 源码（ggml-org/llama.cpp，参考用）
 ├─ ATLAS-engine/                ← ATLAS TQ1.0 三值推理引擎（独立 C/C++ 项目）
 └─ .gitignore                   ← 上面四个带「不入库」的都是排除项
-```
 
 ---
 
@@ -482,6 +499,122 @@ agent_loop.py  -> 5 轮 16.7 s | 21.5 t/s | 前缀复用 84.8% | 收尾作答 4/
 
 ---
 
+### 4.15 LFM2.5-2.6B 还能不能再快：能做的和不能做的
+
+问题：decode 只有 10.3 t/s，对话长了掉到 6 t/s。**先算天花板**：
+1.55 GiB 权重 ÷ 15.3 GB/s = 9.94 t/s —— 实测 9.18~10.1，**已经在带宽墙上**，
+所以任何不减少「每 token 要读的字节数」的旋钮都动不了它。
+
+**内存锁定：+6%，值得加**（`llama-bench -p 0 -n 96 -r 2`，t=4）：
+
+| 加载方式 | tg96 | 差 |
+|---|---|---|
+| `mmap`（默认） | 9.18 ± 0.19 | — |
+| `-lm mlock` | **9.79 ± 0.26** | +6.7% |
+| `-lm none`（不用 mmap） | 9.69 ± 0.07 | +5.5% |
+| `-lm mmap+mlock` | 9.64 ± 0.39 | +5.0% |
+| `-fa off` | 9.28 ± 0.11 | +1% |
+| `-ctk q8_0 -ctv q8_0` | 9.66 ± 0.04 | +5%（KV≈0 时没有意义） |
+
+> 📌 本节更正了第 6 节的老条目「mlock 比 mmap 慢 30%」—— 在这套配置（`-ngl 0
+> -fa on -t 4`，KV≈0）下测不出来，`mlock` 反而快一点。差异可能来自当时的
+> 内存压力状态。**要稳就两个都开**（`-lm mmap+mlock`）。
+
+**长上下文掉速的真实原因：掉的是延迟，不是带宽。**
+用 `bench_ctx2.py`（读 server 端 timings，不靠墙钟相减）实测 `-c 16384 / f16 / t 4`：
+
+| KV 实际长度 | prefill | decode | 带宽公式预测 |
+|---|---|---|---|
+| 0.6k | 36.1 t/s | **10.1 t/s** | 9.9 |
+| 1.9k | 32.6 | 9.6 | 9.6 |
+| 3.6k | 22.9 | 8.7 | 9.1 |
+| 7.0k | 12.8 | **6.2** | 8.5 |
+| 10.4k | 9.0 | 4.9 | 8.1 |
+| 13.8k | 6.9 | **4.1** | 8.7 |
+
+2.6B 的 KV 只有 **16 KiB/token**（30 层里只有 8 层是真注意力），
+13.8k 时 KV 才 0.21 GiB = 权重流量的 12%。按带宽算只该掉到 8.7，
+实测 4.1 —— **差了 2 倍**。原因是长 KV 是 8 层 × 8 个 KV 头的跨步小读，
+访存效率上不去，前端拿不满 ~15 GB/s。**L_half=102k 这个公式值在这里完全没用。**
+
+所以你问的两个提速手段：
+
+- ❌ **减小 `-c`：没用。** decode 只读实际存在的 KV，`-c` 改的是天花板不是现状。
+- ✅ **砍实际对话长度：有用。** 7k→6.2、3.6k→8.7、1.9k→9.6。
+  手段是 `--context-shift` + 客户端别把整份历史原样回灌 + 控制单文件读取量。
+- ⚠️ KV 量化在这个模型上收益 <10%（KV 只占 12% 流量），且会伤 prefill，
+  本轮没测完，优先级低。`ctxtune.sh` 是为这件事写的批量对比脚本。
+
+**投机解码：这条路是堵死的。** `LFM2.5-1.2B` 的词表 65536、
+`LFM2.5-2.6B` 是 128000，而且**前 65536 个 token 一个都不重合**（不是子集关系，
+`tokenizer.ggml.tokens` 逐个比对过）。拿 1.2B 当 draft 只会吐垃圾，
+llama.cpp 也不做词表映射。这和第 6 节记录的「1.2B 给 8B-A1B 当 draft」是同一个死因。
+
+**剩下的唯一真杠杆是减权重字节数**：换更小的量化（Q4_K_M 1.55 GiB → Q3_K_M 约 1.1 GiB，
+理论上 +25%），但这台机器上 IQ* 系列没有 batched GEMM（见 4.4），
+K-quant 里能省的只有 Q3/Q2，代价是 2.6B 仅有的那点路径准确度。
+
+### 4.16 SakThai Context 0.5B：最快，但弱到只能只读
+
+`Nanthasit/sakthai-context-0.5b-merged` = Qwen2.5-0.5B-Instruct + 2309 行
+tool-calling SFT（`sakthai-0.5b-Q4_K_M.gguf`，379 MiB）。装完实测的结论是
+**「速度白给，可靠性白送」**：3.4 倍速度换 0 个能落盘的文件。
+
+**速度**（`f16 / t 4`，`bench_ctx2.py`；0.6k–7.5k 取自 `-c 8192` 那轮，14.8k 取自 `-c 16384` 那轮）：
+
+| KV 实际长度 | prefill | decode | 对比 2.6B |
+|---|---|---|---|
+| 0.6k | 213 t/s | **35.7 t/s** | 10.1 |
+| 2.0k | 167 | 23.8 | 9.6 |
+| 7.5k | 132 | 17.9 | 6.2 |
+| 14.8k | 90 | 9.7 | 4.1 |
+
+`llama-bench tg256` 上限 38.3 t/s（t=4；t=6 只有 29.5）。
+24 层**全部**存 KV（12 KiB/token，没有混合注意力的便宜可占），`L_half=32k`，
+所以 8k 之前基本不掉速、过了 8k 掉得比 LFM2.5-1.2B 快得多。
+工作集不到 1 GiB，`mlock` 无收益，KV 量化无收益。
+
+**核心坑：GGUF 里内嵌的 chat template 和它实际训出来的格式对不上。**
+用内嵌模板（模型卡的原版）时，它吐的是这三种野格式：
+
+```
+<tools> {"name": "get_weather", "arguments": {}} </tools>
+tools\nlist_dir('models')
+FUNCTION: get_files_count\nPARAMETERS: {}
+```
+
+llama.cpp 一个都解析不出来 → `tool_calls: null`，看起来像「模型不支持工具」。
+**修法**：另写 `sak_template.jinja`，把「只输出 `<tool_call>` JSON」这条规则
+加一正一反两个示例硬塞进 system，然后 `--chat-template-file sak_template.jinja`。
+同一个问题立刻原生解析成功。**这个参数不能删。**
+
+配套的 flag 坑：`--chat-template` 收的是**内联字符串**，文件要用
+`--chat-template-file`。传错的话模板正文变成字面量 `sak_template.jinja`，
+模型会顺着编「sak_template 2.0 发行说明」——两种写法都实测过。
+
+**能到什么程度**：
+
+| 测试 | 结果 |
+|---|---|
+| `tool_test.py`（2 工具，3 用例） | ✅ 3/3，含「不该调工具」那题 |
+| `sak_oneshot.py`（3 工具 + 一条 one-shot 示例） | 3/4，工具名全对 |
+| `agent_loop.py 4`（3 工具真实 agent 循环） | ❌ **0/4**，退化成 `list_dir -path=models/` 伪命令行 |
+| `fs_probe.py` 明确轮 | ❌ **FAIL**，编 `/home/user/notes.txt` |
+| `sak_qa.py` 中文分析 | 能读懂代码，但**编造不存在的 API**（`llama::LLM::Prefill::SecondRoundTime`）、不遵守长度、不停 |
+
+**它不会自己停。** `finish_reason` 常年 `length`，会自问自答继续编
+`user\n…\nassistant`（temp 0.3 时一口气吐过 19 个 tool_call）。
+客户端**必须**带 `stop=["<|im_end|>","\nuser","\nsystem"]` 且 `max_tokens ≤ 200~300`。
+采样用 **temp 0.1**（0.7 会连吐 2-3 个重复 tool_call）。
+
+另一条能用的路：`tool_choice` 传具体函数对象时，llama.cpp 会启用 grammar
+约束，输出**保证**是合法 `tool_call`（实测 `list_dir({"path":"models"})` 正确），
+但它约束完还会接着絮叨，仍需 stop 兜底。
+
+**结论：只读查询 / 分类 / 摘要可以用；写文件、改代码一律回 `agent-lfm26.cmd`。**
+如果只是想要「更快的小模型」，`agent-lfm12-fast.cmd`（1.2B，21.7 t/s，
+2k→16k 零衰减，路径偶有笔误）严格优于它。
+
 ## 5. 工具脚本
 
 | 脚本 | 用途 |
@@ -490,9 +623,17 @@ agent_loop.py  -> 5 轮 16.7 s | 21.5 t/s | 前缀复用 84.8% | 收尾作答 4/
 | `tool_test.py [端口] [alias] [temp]` | 3 用例冒烟（单工具 / 多工具选择 / 不该调），退出码 0/1 |
 | `tool_stress.py [端口] [alias] [temp] [N]` | N 工具（默认 12）压力测试：同域干扰项 + enum/嵌套参数 + 3 个反诱导用例，找「工具一多就选错」的规模拐点 |
 | `fs_probe.py [端口] [alias] [temp] [--clean]` | **写文件能力探针**：照抄 pi 的工具 schema，在沙箱里真的落盘。分「弱提示」（只记录它干什么）和「明确提示」（必须 write + path 带文件名 + 真落盘），退出码 0/1。`tool_test.py` 3/3 通过却写不了文件，就是靠它抓出来的 |
-| `bench_decode.py [端口] [alias] [长度列表]` | decode 速度 vs 上下文长度曲线（两次请求相减，不依赖 server 日志） |
+| `bench_decode.py [端口] [alias] [长度列表]` | decode 速度 vs 上下文长度曲线（两次请求相减）。**差分法会算出负值，别信** |
+| `bench_ctx2.py [端口] [alias] [长度列表]` | 同上，但直接读 server 端 `timings`（`prompt_n` / `cache_n` / `predicted_per_second`）。**当前推荐**，还能顺带看缓存命中 |
+| `ctxtune.sh "<长度列表>" "<变体1>" …` | 长上下文下批量对比 KV 量化 / 线程 / fa / mlock，每变体起一次服务跑 `bench_ctx2.py` |
 | `kvcalc.py <model.gguf>` | 读 GGUF 元数据，算 KV bytes/token 和各上下文下的占用 |
 | `dl.sh <owner/repo> <file.gguf> <dest> [分片数]` | 魔搭 → hf-mirror → HF 直连，8 路并行 Range，严格校验字节数 |
+| `sak_qa.py [端口] [alias] [temp]` | 中文问答 / 代码分析质量（不给工具，自带 stop 序列） |
+| `sak_eval.py [端口] [alias] [temp] [--stop]` | 工具调用 + 中文分析 4 用例，`--stop` 对照「它会不会自己停」 |
+| `sak_oneshot.py [端口] [alias] [temp]` | 在 history 最前面插一条 one-shot 示例，测格式合规率能不能救回来 |
+| `sak_forced.py [端口] [alias]` | `tool_choice` 指定函数时 llama.cpp 的 grammar 约束路径 |
+| `raw_probe.py [端口] [alias] [temp] [top_k]` | 看模型吐的**原始文本**，绕过 tool_call 解析器，定位「是模型没按格式还是解析器不认」 |
+| `sakstart.sh [端口] "<额外参数>"` | 一次性起 SakThai 测试服务（生产用 `agent-sakthai.cmd`） |
 
 ```bash
 # 下载（默认魔搭优先 —— hf-mirror 的分片内容曾损坏过）
@@ -512,6 +653,7 @@ bash dl.sh <owner/repo> <file.gguf> models [分片数]
 
 | 用途 | repo | 文件 | 大小 |
 |---|---|---|---|
+| **最快的只读/问答底座**（需挂 `sak_template.jinja`，见 4.16） | `Nanthasit/sakthai-context-0.5b-merged` | `sakthai-0.5b-Q4_K_M.gguf` | 379 MiB |
 | **agent 首选**（8B-A1B） | `unsloth/LFM2.5-8B-A1B-GGUF` | `LFM2.5-8B-A1B-UD-Q4_K_M.gguf` | 4.95 GiB |
 | agent 首选·省内存版 | `unsloth/LFM2.5-8B-A1B-GGUF` | `LFM2.5-8B-A1B-UD-IQ2_M.gguf` | 2.56 GiB |
 | **最快的 agent 底座** | `LiquidAI/LFM2.5-1.2B-Instruct-GGUF` | `LFM2.5-1.2B-Instruct-Q4_K_M.gguf` | 695 MiB |
@@ -521,6 +663,9 @@ bash dl.sh <owner/repo> <file.gguf> models [分片数]
 | 起草 / 摘要（**不会调工具**） | `openbmb/MiniCPM5-1B-GGUF` | `MiniCPM5-1B-Q4_K_M.gguf` | 656 MiB |
 | 纯文本（工具调用废了） | `Qwen/Qwen2.5-Coder-7B-Instruct-GGUF` | `qwen2.5-coder-7b-instruct-q4_k_m.gguf` | 4.36 GiB |
 | 反面教材（KV 太贵） | `unsloth/Qwen3-1.7B-GGUF` | `Qwen3-1.7B-Q4_K_M.gguf` | 1.03 GiB |
+
+> `Nanthasit/sakthai-context-0.5b-merged` 只有一个 Q4_K_M，没有别的量化。
+> 它不在魔搭上，`dl.sh` 会自动落到 hf-mirror（实测可用，397,808,352 字节校验通过）。
 
 > ⚠️ `Qwen/Qwen3-1.7B-GGUF` 官方只发布了 **Q8_0**，没有 Q4_K_M —— 要 Q4 得用
 > unsloth 的仓库。文件名大小写必须一字不差（`Q4_K_M` 不是 `q4_k_m`）。
@@ -537,34 +682,47 @@ bash dl.sh <owner/repo> <file.gguf> models [分片数]
   `ggml_vulkan: Device memory allocation ... failed`（UHD 630 报 10298 MiB 但可用 0）。
   Vulkan 全卸载实测只有 11.7 t/s，纯 CPU 反而更快。`bin-vulkan/` 故意**不**放在
   `Bonsai-demo/bin/` 下，就是为了防止启动脚本误选。
-- `mlock` 比 `mmap` 慢 30%，保持默认 mmap。
+- ~~`mlock` 比 `mmap` 慢 30%，保持默认 mmap。~~ **2026-10-12 重测，这条是错的**：
+  在 `-ngl 0 -fa on -t 4` 下 `llama-bench -p 0 -n 96 -r 2` 测得 mmap 9.18 → `-lm mlock`
+  9.79（+6.7%）、`-lm none` 9.69、`-lm mmap+mlock` 9.64。老数字多半来自当时的
+  内存压力状态。详见 4.15。**`--mlock` 可以放心开**。
 - `-t 6` 一律更慢（内存总线争抢）。`-t 4` 是甜点，`-tb 6` 单独给 prefill 用全核。
+  0.5B 上同样成立：t=4 38.3 t/s，t=6 只有 29.5。
 
 **模型 / 采样**
-- **LFM2.5-1.2B 不带 `--jinja` 就完全调不了工具**：启动 `llama-server` 必须加
-  `--jinja`，它负责加载 GGUF 里的 chat template（5442 字节，`supports_tools=true`）。
-  少了这个开关，模型不会报任何错，只是把调用当普通文本吐回来 —— `tool_calls` 恒为空，
-  看起来像「模型不支持工具」。所有 `agent-*.cmd` 都已默认带上。
-- **thinking 模型会吃光 `max_tokens`**
-  与答案共用预算。`max_tokens=300` 会让三个用例全部 `finish_reason=length` + `content=''`，
-  看起来像「不支持工具调用」。**至少给 600**（长轮次 1400）。
-- `chat_template_kwargs={"enable_thinking": false}` 对 2.6B **无效**，实测照样思考。
-- Ornith 是 reasoning 模型，一句话烧 2967 个 thinking token（≈16 分钟）。
-  必须 `--reasoning-budget 256`。被砍掉的思考尾巴会泄漏进 `content`，客户端需按 `</think>` 切分。
-- 采样参数必须照模型卡（LFM2.5-1.2B/2.6B：`temp 0.1 / top_k 50 / repeat 1.1`）。
-  「优化」成 qwen 风格的 0.7/0.95 会让工具调用的 JSON 直接崩。
-- MiniCPM5-1B 拒绝输出 tool_calls JSON（模型卡推荐 SGLang 后端 / XML 模板）。
-  能聊天、能算数、能写简单代码，但**知识问答会胡说**，且不能驱动 agent。
-- **Qwen2.5-Coder-7B 的工具调用会退化成裸文本**（不是模板问题、不是量化问题）。
-  本 fork 下要自己写正则适配，不值得。
 - LFM2.5 的 DSpark 投机解码是死路：draft acceptance = 0.00000，9.9 → 1.1 t/s。
-- `--spec-draft-model` 拿 1.2B 给 8B-A1B 做 draft：词表 65536 vs 128000 对不齐，别依赖。
+- `--spec-draft-model` 拿 1.2B 当 draft：**LFM2.5 家族内部词表就对不齐**。
+  1.2B 是 65536、2.6B 是 128000、8B-A1B 也是 128000，而且 1.2B 与 2.6B 的
+  **前 65536 个 token 一个都不重合**（不是子集关系）。llama.cpp 不做词表映射，
+  draft 只会吐垃圾。别依赖。
+- **GGUF 内嵌的 chat template 可能和模型实际训出来的格式不一致** ——
+  SakThai 0.5B 用内嵌模板时吐 `<tools>{"name":…}</tools>` / `tools\nlist_dir('x')` /
+  `FUNCTION: x\nPARAMETERS: {}`，llama.cpp 全部解析不出来（`tool_calls=null`），
+  症状和「模型不支持工具」一模一样。修法是另写模板硬塞规则+示例，
+  见 4.16 的 `sak_template.jinja`。**排查工具调用问题的第一步永远是
+  `raw_probe.py` 看原始文本**，别只看 `tool_calls` 是不是空。
+- **`--chat-template` 收内联字符串，`--chat-template-file` 才收文件路径。**
+  传错的话模型会把模板正文当 prompt，然后顺着编「某某包 2.0 发行说明」。
+  两种写法都实测过，报错都看不出来。
+- **模型卡的「工具调用 5/5」往往是文本级验证，不是 OpenAI `tool_calls` 级。**
+  SakThai 卡上写「verified 5/5 tool selection（llama.cpp, CPU）」，但它给的
+  期望输出是 `<tool>get_weather</tool>` 这种裸文本 —— 换句话说它自己也知道
+  解析器认不出来。看模型卡先确认它的评测到底比的是什么。
+- **小模型不会自己停。** SakThai 0.5B 的 `finish_reason` 常年 `length`，
+  会自问自答继续编 `user\n…\nassistant`，temp 0.3 时一轮吐过 19 个 tool_call。
+  客户端必须带 `stop=["<|im_end|>","\nuser","\nsystem"]` 并压低 `max_tokens`。
 
 **测试方法**
 - **测速前先确认只有一个 llama-server**。两个抢同一批核，测出来全是假数据（见过 1.1 t/s）。
-- `llama-bench -p 0` 测出的 tg 是假数据（LFM2.5 走慢路径，1.2B 报 10.39，
-  带 `-p 2048` 才是 23.87）。**测 decode 必须带上下文**。
-- `llama-bench` 不支持 `-c` / `-ctk`。
+- `llama-bench -p 0` 测出的 tg 对 LFM2.5 **不一定是**假数据：2.6B 报 9.18、
+  Qwen2.5-0.5B 报 38.3，都和 server 端实测（10.1 / 35.7）对得上。
+  但 1.2B 上曾报 10.39 而带 `-p 2048` 是 23.87。**结论不可跨模型外推，
+  最终以 server 端 `timings` 为准**（`bench_ctx2.py`）。
+- `llama-bench` 不接受 `-c` / `-tb`（`-ctk`/`-ctv` 可以），它按 `n_prompt+n_gen` 定上下文。
+  所以「`-c` 对 decode 的影响」在 llama-bench 上根本测不出来，只能用 `bench_ctx2.py`。
+- **`bench_decode.py` 的差分法不可信**：它拿「max_tokens=1 的冷请求」和
+  「同 prompt + 160 tok」两次墙钟相减，实测跑出 **-0.6 t/s** 这种负数。
+  改用 `bench_ctx2.py` 直接读 `timings.predicted_per_second`。
 - **不带 tools 发一句纯文本**：乱码 = 文件坏了；纯文本正常但 `tool_calls` 为空 = 才是格式/预算问题。
   这一步能省掉大量瞎猜。
 
@@ -620,7 +778,7 @@ TQ1.0 三值量化推理引擎，1.58 bit/权重，5 trits/byte。**它自己的
 
 ## 维护提示
 
-- **仓库里不包含任何权重和二进制。** `models/`（36 GB GGUF）、`Bonsai-demo/`
+- **仓库里不包含任何权重和二进制。** `models/`（36.4 GB GGUF）、`Bonsai-demo/`
   （引擎二进制）、`llama-cpp-src/`、`ATLAS-engine/` 都在 `.gitignore` 里，
   各自是独立仓库。克隆后要自己准备：
   1. 引擎二进制放 `Bonsai-demo/bin/cpu/`（见 `Bonsai-demo` 仓库的 build 说明）
@@ -630,3 +788,7 @@ TQ1.0 三值量化推理引擎，1.58 bit/权重，5 trits/byte。**它自己的
 - `models/` 下还有几个未接脚本的模型：`Qwen3-1.7B-Q4_K_M.gguf`、
   `LFM2.5-8B-A1B-UD-IQ2_M.gguf`、`Ornith-1.0/1.5-9B-IQ4_XS.gguf`、
   `qwen2.5-coder-3b-instruct-q2_k.gguf`、`Bonsai-1.7B-Q1_0.gguf`。
+- `agent-sakthai.cmd` **必须和 `sak_template.jinja` 放在一起**（在仓库根目录，
+  脚本用 `%~dp0` 定位）。换掉它工具调用就全废，见 4.16。
+- `.cmd` 全部是纯 ASCII（代码页 936 会把中文注释里的字节错配成管道符并执行），
+  改这些脚本时注释也只能写英文。
