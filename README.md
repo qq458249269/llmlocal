@@ -581,6 +581,9 @@ bash dl.sh <owner/repo> <file.gguf> models [分片数]
   并**真的执行注释尾巴**（`rem` 里的 `|` 也一样）。`set` 行里禁止出现 `|`。
 - `echo` 里的 `>` 必须转义成 `^>`，否则整行被重定向进文件 —— 症状是工作目录里
   莫名其妙冒出 `-c`、`18)`、`1` 这类 0 字节的垃圾文件（`>f16` 被解析成了重定向）。
+  `rem` 行里的 `>` 没事，只有 `echo` 会中招。2026-10-12 写 `agent-lfm26.cmd` 时
+  又踩了一次：`echo ... max_tokens >= 1400` 生成了一个**57 字节**的 `1400` 文件，
+  里面是被吞掉 `>= 1400` 的那行文字。
 - `%ARCH%.` 不能写成 `%ARCH%\.`（反斜杠原样传给进程，`--override-kv` 失效）。
 - `for /f` 取值要加 `tokens=*`，否则带空格的 NOTE 被截断。
 - PowerShell 脚本要 `-ExecutionPolicy Bypass`。

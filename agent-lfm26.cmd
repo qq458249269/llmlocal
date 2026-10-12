@@ -121,6 +121,8 @@ if not exist "%~dp0llama-plan.ps1" (
 REM ---- ask the planner what we can afford right now ----
 REM NOTE: arrow below MUST stay escaped as ^> -- a bare > is a shell
 REM redirection and would dump the whole line into a file named "f16".
+REM Every `>` in an `echo` line needs it too: an unescaped one here
+REM silently created a 57-byte file literally named "1400".
 REM This file is deliberately pure ASCII: cmd.exe decodes UTF-8 .cmd on
 REM codepage 936 and mis-pairs non-ASCII bytes into pipe characters,
 REM which then get EXECUTED as commands.
@@ -148,7 +150,7 @@ echo       decode  ~10.3 t/s, prefill ~65.5 t/s
 echo       memory  ~2.1 GiB at 16384 f16.  prefix cache ON
 echo       (cache-ram=%CACHEMB% MiB, ctx-checkpoints=%CTXCP%,
 echo        checkpoint-min-step=%CMS%)
-echo       THINKING model -- give every request max_tokens >= %MAXX%,
+echo       THINKING model -- give every request max_tokens ^>= %MAXX%,
 echo       or it will finish_reason=length with an empty answer.
 echo.
 echo       test   : cd /d %~dp0 ^& set AGENT_MAXTOK=%MAXX% ^& python tool_test.py %PORT% %ALIAS% %TEMP%
