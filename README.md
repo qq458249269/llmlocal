@@ -18,7 +18,7 @@
 agent-lfm25-8b.cmd          :: 推荐：工具调用 agent 用这个，端口 8082
 agent-lfm26.cmd              :: 要写文件/改代码用这个，路径最准，端口 8080
 agent-lfm12-fast.cmd         :: 只要快、不写文件用这个，端口 8083
-agent-sakthai.cmd            :: 最快的只读/问答底座（35.7 t/s），端口 8084
+agent-sakthai.cmd            :: 最快的底座（35.7 t/s），端口 8084，**工具调用走 8085 代理**
 
 :: 2. 另开一个 cmd 验证
 python tool_test.py 8082 lfm25-8b 0.1          :: 冒烟：能不能吐 tool_calls
@@ -59,7 +59,7 @@ powershell -c "Stop-Process -Name llama-server -Force"
 
 | 启动脚本 | 模型 | 权重 | 端口 | 生成 | 预填充 | 工具调用 | 定位 |
 |---|---|---|---|---|---|---|---|
-| `agent-sakthai.cmd` | SakThai Context 0.5B Q4_K_M | 0.37 GiB | 8084 | **35.7 t/s** | 213 t/s | ✅ 3/3 | ⚠️ **最快**，但只能只读/问答（见 4.16） |
+| `agent-sakthai.cmd` | SakThai Context 0.5B Q4_K_M | 0.37 GiB | 8084 → **8085 代理** | **35.7 t/s** | 213 t/s | ✅ 4/4（经代理） | ⚠️ **最快**，但只能只读/问答（见 4.16） |
 | `agent-minicpm5-1b.cmd` | MiniCPM5-1B Q4_K_M | 0.64 GiB | 8081 | **26.8 t/s** | 215 t/s | ❌ 拒绝 | 起草/摘要/长上下文预热 |
 | `agent-lfm12-fast.cmd` | LFM2.5-1.2B-Instruct Q4_K_M | 0.68 GiB | 8083 | **21.7 t/s** | 163 t/s | ✅ 3/3 | ⭐ **最快的 agent 底座**（2k→16k 零衰减） |
 | `agent-lfm25.cmd` | LFM2.5-1.2B-Instruct Q4_K_M | 0.68 GiB | 8080 | **24 t/s** | 176 t/s | ✅ 3/3 | 快的 agent 底座 |
@@ -88,9 +88,10 @@ powershell -c "Stop-Process -Name llama-server -Force"
 
 - **只要快 + 要调工具** → `agent-lfm12-fast.cmd`（端口 8083）。decode 21.7 t/s 且
   **2k→16k 零衰减**，16k 上下文只占 1.2 GiB，5 轮循环 16.7 s。
-- **只要快，不管工具准度** → `agent-sakthai.cmd`（端口 8084，35.7 t/s，397 MB）。
-  快 1.6 倍，但 `fs_probe.py` 明确轮 FAIL，会凭空编 `/home/user/x.txt`，
-  且**不会自己停**。只读查询 / 分类 / 摘要可以用，见 4.16。
+- **只要快** → `agent-sakthai.cmd`（**端口 8085 代理**，35.7 t/s，397 MB）。
+  快 1.6 倍，工具调用经 `sakfix.py` 归一化后 `agent_loop.py` 5/5 轮全对；
+  但 `fs_probe.py` 明确轮仍 FAIL，会凭空编 `/home/user/x.txt`。只读 / 分类 / 摘要，
+  见 4.16。
 - **工具调用 agent，且需要 8B 级知识** → `agent-lfm25-8b.cmd`。8.47B 总参但每 token
   只激活 1.5B，速度像 1.5B，知识像 8B。代价是 decode 慢 1.6×（21.7 → 13.8 t/s）。
 - **agent 要写真代码** → `agent-ornith9b.cmd`（SWE-bench Verified 70.6），
@@ -126,7 +127,11 @@ LLMlocal/
 ├─ ctxsweep.sh / tbench.sh      ← decode vs 上下文 / vs 线程数 批量测试
 ├─ dl.sh                        ← GGUF 下载器（魔搭→hf-mirror→HF，多路分片 + 校验）
 │
-├─ sak_template.jinja           ← SakThai 0.5B 的严格版 chat template（**必挂**，见 4.16）
+├─ sakfix.py                    ← **SakThai 归一化代理**（8085→8084）：5 种野格式→tool_calls、截废话、截退化重复、修历史 tool_calls（见 4.16）
+├─ sak_unit.py                  ← sakfix.py 归一化逻辑单测（26 条，秒级，不碰模型）
+├─ sak_diag.py                  ← SakThai 原始输出格式诊断（把野格式逐个量化）
+├─ sak_tokcfg.json             ← 模型卡 tokenizer_config 存档（对照训练时的 tool 格式）
+├─ sak_template.jinja           ← SakThai 0.5B 的严格版 chat template（挂不挂都行，见 4.16）
 ├─ sakstart.sh                  ← SakThai 一次性测试启动器
 ├─ sak_qa.py                    ← 中文问答/代码分析质量（不给工具）
 ├─ sak_eval.py                  ← 工具调用 + 中文分析 4 用例，带 stop 对照
@@ -574,33 +579,62 @@ tool-calling SFT（`sakthai-0.5b-Q4_K_M.gguf`，379 MiB）。装完实测的结�
 所以 8k 之前基本不掉速、过了 8k 掉得比 LFM2.5-1.2B 快得多。
 工作集不到 1 GiB，`mlock` 无收益，KV 量化无收益。
 
-**核心坑：GGUF 里内嵌的 chat template 和它实际训出来的格式对不上。**
-用内嵌模板（模型卡的原版）时，它吐的是这三种野格式：
+**核心坑：它给 tool_call 套的壳每次都不一样，llama.cpp 只认其中一种。**
+`sak_diag.py` 固定 prompt、每个格式跑 8 次的实测结果：
 
-```
-<tools> {"name": "get_weather", "arguments": {}} </tools>
-tools\nlist_dir('models')
-FUNCTION: get_files_count\nPARAMETERS: {}
-```
+| 模型吐出的形态 | llama.cpp 原生解析 |
+|---|---|
+| `<tool_call>{"name":…}</tool_call>` | ✅ 唯一认的 |
+| `<tools>{"type":"function","function":{…}}</tools>` | ❌ 0/8 |
+| `{"name":"list_dir","arguments":{…}}`（裸 JSON） | ❌ 0/8 |
+| `tools[name: 'list_dir', arguments: {…}]`（Python 字面量） | ❌ 0/8 |
+| `<tool>list_dir</tool>{"arguments":{…}}`（模型卡上的训练格式） | ❌ 0/8 |
+| `FUNCTION: list_dir\nPARAMETERS: {…}` | ❌ 0/8 |
 
-llama.cpp 一个都解析不出来 → `tool_calls: null`，看起来像「模型不支持工具」。
-**修法**：另写 `sak_template.jinja`，把「只输出 `<tool_call>` JSON」这条规则
-加一正一反两个示例硬塞进 system，然后 `--chat-template-file sak_template.jinja`。
-同一个问题立刻原生解析成功。**这个参数不能删。**
+而且**换模板救不回来**：另写的严格版 `sak_template.jinja`（把规则和正反示例塞进
+system）实测同样 0/8，temp 降到 0.1 也一样。结论是**格式不稳是模型本身的问题**，
+不是模板的问题 —— 所以别再跟 `--chat-template-file` 较劲，改成客户端归一化。
 
-配套的 flag 坑：`--chat-template` 收的是**内联字符串**，文件要用
-`--chat-template-file`。传错的话模板正文变成字面量 `sak_template.jinja`，
-模型会顺着编「sak_template 2.0 发行说明」——两种写法都实测过。
+**修法：`sakfix.py` 归一化代理（8085 → 8084，纯客户端，不改模型不改 server）。**
+它做五件事：
+
+1. **格式归一**：上面 5 种野格式 + `<functions>call</functions> 以 X 函数调用`
+   全部抠成标准 OpenAI `tool_calls`（JSON / Python 字面量 / 单引号都收）；
+2. **截废话**：按 `\nuser\n` / `\nassistant\n` / `<|im_end|>` 等轮次标记切掉自问自答，
+   再切退化重复（实测 `write_file` 的 content 里会冒出 400 个连续 `0`）；
+3. **合法性校验**：工具名不在本次 `tools` 里就丢（防幻觉工具名），
+   `arguments` 为空也丢（多半是 schema 回显，不是真调用）；
+4. **one-shot 预热**：在 history 最前面插一条「调用 → 工具结果 → 一句话收尾」示例，
+   内容只由 `tools` 决定（逐字节固定，所以照样命中前缀缓存），顺手教会它「答完就停」；
+5. **修复回合**：有调用意图却解析不出工具名时，用 `json_schema` 约束重问一次，
+   `name` 锁在本次 tools 的 enum 里，参数让模型自己填（不替它猜，猜出来的假路径更危险）。
+
+**顺带修掉一个通用 bug：llama.cpp 对「历史 tool_calls 参数非法」直接返 HTTP 500。**
+模型写 `write_file` 的长 content 撞上 `max_tokens`，`arguments` 就被截成
+`{"path":"notes/a.md","content":"第一行\n- 000…`（未闭合字符串）。下一轮请求带着
+这段历史进来，llama.cpp 渲染模板前会**硬解析历史 tool_calls**，解析不了就 500 ——
+而且发生在 prefill **之前**，所以重试、降 `repeat_penalty`、`tool_choice=required`、
+甚至去掉 `tools` 全都没用（4/4 实测全 500）。`sakfix.py` 在请求进上游之前把历史里每条
+`arguments` 校验一遍：能补引号就补（保留真实内容），补不了就按 schema 降级成
+`{"path": null, …}`，保证模板渲染永远不炸。**这个坑对任何模型都成立**，只要它的
+工具参数可能被 `max_tokens` 截断。
+
+配套的 flag 坑仍在：`--chat-template` 收的是**内联字符串**，文件要用
+`--chat-template-file`；传错模型会顺着编「sak_template 2.0 发行说明」。
 
 **能到什么程度**：
 
-| 测试 | 结果 |
-|---|---|
-| `tool_test.py`（2 工具，3 用例） | ✅ 3/3，含「不该调工具」那题 |
-| `sak_oneshot.py`（3 工具 + 一条 one-shot 示例） | 3/4，工具名全对 |
-| `agent_loop.py 4`（3 工具真实 agent 循环） | ❌ **0/4**，退化成 `list_dir -path=models/` 伪命令行 |
-| `fs_probe.py` 明确轮 | ❌ **FAIL**，编 `/home/user/notes.txt` |
-| `sak_qa.py` 中文分析 | 能读懂代码，但**编造不存在的 API**（`llama::LLM::Prefill::SecondRoundTime`）、不遵守长度、不停 |
+**直连 8084（原样）与走 8085（sakfix 代理）对比**：
+
+| 测试 | 8084 原样 | 8085 经代理 |
+|---|---|---|
+| `sak_oneshot.py`（3 工具 + one-shot） | 3/4，工具名全对 | ✅ **4/4**，含「不该调工具」那题 |
+| `agent_loop.py`（3 工具真实 agent 循环） | ❌ **0/4**，退化成 `list_dir -path=models/` 伪命令行 | ✅ **5 轮全跑完，4/4 工具调用正确**，平均每轮 1 个 call，30.1 t/s，前缀缓存 91.7% |
+| `fs_probe.py` 明确轮 | ❌ FAIL，编 `/home/user/notes.txt` | 仍然会编 POSIX 路径（**没救，这是 0.5B 的上限**） |
+| `sak_qa.py` 中文分析 | 能读懂代码，但**编造不存在的 API**、不遵守长度、不停 | 同左（不给工具时代理只透传） |
+
+`sak_unit.py` 是代理归一化逻辑的单测（26 条，含上面 5 种野格式、幻觉工具名、
+退化重复、历史参数截断修复），秒级、不碰模型，**改 `sakfix.py` 后先跑它**。
 
 **它不会自己停。** `finish_reason` 常年 `length`，会自问自答继续编
 `user\n…\nassistant`（temp 0.3 时一口气吐过 19 个 tool_call）。
@@ -611,9 +645,10 @@ llama.cpp 一个都解析不出来 → `tool_calls: null`，看起来像「模�
 约束，输出**保证**是合法 `tool_call`（实测 `list_dir({"path":"models"})` 正确），
 但它约束完还会接着絮叨，仍需 stop 兜底。
 
-**结论：只读查询 / 分类 / 摘要可以用；写文件、改代码一律回 `agent-lfm26.cmd`。**
-如果只是想要「更快的小模型」，`agent-lfm12-fast.cmd`（1.2B，21.7 t/s，
-2k→16k 零衰减，路径偶有笔误）严格优于它。
+**结论：`tool_calls` 恒为 null 的问题已经解决**（走 8085 代理，4/4 + 5/5 轮），
+**路径幻觉没解决** —— 只读查询 / 分类 / 摘要可以用，真要落盘写代码仍然回
+`agent-lfm26.cmd`。如果只是想要「更快的小模型」，`agent-lfm12-fast.cmd`
+（1.2B，21.7 t/s，2k→16k 零衰减，路径偶有笔误）严格优于它。
 
 ## 5. 工具脚本
 
@@ -628,6 +663,9 @@ llama.cpp 一个都解析不出来 → `tool_calls: null`，看起来像「模�
 | `ctxtune.sh "<长度列表>" "<变体1>" …` | 长上下文下批量对比 KV 量化 / 线程 / fa / mlock，每变体起一次服务跑 `bench_ctx2.py` |
 | `kvcalc.py <model.gguf>` | 读 GGUF 元数据，算 KV bytes/token 和各上下文下的占用 |
 | `dl.sh <owner/repo> <file.gguf> <dest> [分片数]` | 魔搭 → hf-mirror → HF 直连，8 路并行 Range，严格校验字节数 |
+| `sakfix.py [上游端口=8084] [监听端口=8085] [--no-oneshot] [--no-repair]` | **SakThai 归一化代理**：客户端把 0.5B 的 5 种野 tool_call 格式统一成 OpenAI 形状，截自问自答和退化重复，修历史里被 `max_tokens` 截断的 `arguments`（否则 llama.cpp 返 500）。客户端一律指 8085 |
+| `sak_unit.py` | `sakfix.py` 归一化逻辑单测（26 条，不碰模型，改完代理先跑） |
+| `sak_diag.py [端口] [alias] [temp]` | 把「循环 / 返 JSON / EOS」三件事量化，打印模型原始输出 |
 | `sak_qa.py [端口] [alias] [temp]` | 中文问答 / 代码分析质量（不给工具，自带 stop 序列） |
 | `sak_eval.py [端口] [alias] [temp] [--stop]` | 工具调用 + 中文分析 4 用例，`--stop` 对照「它会不会自己停」 |
 | `sak_oneshot.py [端口] [alias] [temp]` | 在 history 最前面插一条 one-shot 示例，测格式合规率能不能救回来 |
@@ -695,12 +733,16 @@ bash dl.sh <owner/repo> <file.gguf> models [分片数]
   1.2B 是 65536、2.6B 是 128000、8B-A1B 也是 128000，而且 1.2B 与 2.6B 的
   **前 65536 个 token 一个都不重合**（不是子集关系）。llama.cpp 不做词表映射，
   draft 只会吐垃圾。别依赖。
-- **GGUF 内嵌的 chat template 可能和模型实际训出来的格式不一致** ——
-  SakThai 0.5B 用内嵌模板时吐 `<tools>{"name":…}</tools>` / `tools\nlist_dir('x')` /
-  `FUNCTION: x\nPARAMETERS: {}`，llama.cpp 全部解析不出来（`tool_calls=null`），
-  症状和「模型不支持工具」一模一样。修法是另写模板硬塞规则+示例，
-  见 4.16 的 `sak_template.jinja`。**排查工具调用问题的第一步永远是
-  `raw_probe.py` 看原始文本**，别只看 `tool_calls` 是不是空。
+- **模型给 tool_call 套的壳可能每次都不一样。** SakThai 0.5B 实测有 6 种形态
+  （`<tools>{…}</tools>` / 裸 JSON / Python 字面量 / `<tool>x</tool>` /
+  `FUNCTION:/PARAMETERS:` / 原生 `<tool_call>`），llama.cpp 只认最后一种，
+  其余全部 `tool_calls=null`；换 chat template 也救不回来（0/8）。修法是客户端归一化
+  （`sakfix.py`），见 4.16。**排查工具调用问题的第一步永远是 `raw_probe.py` /
+  `sak_diag.py` 看原始文本**，别只看 `tool_calls` 是不是空。
+- **历史里带一条非法 JSON 的 tool_calls，整个请求会 500。** llama.cpp 在渲染
+  模板前会硬解析历史 `tool_calls`，某个 `arguments` 被 `max_tokens` 截断成
+  未闭合字符串就整轮 500（**prefill 之前**，重试 / 降参数 / 去掉 tools 全无效）。
+  客户端要在发请求前把历史 `arguments` 校验一遍，见 4.16 的 `sanitize_history`。
 - **`--chat-template` 收内联字符串，`--chat-template-file` 才收文件路径。**
   传错的话模型会把模板正文当 prompt，然后顺着编「某某包 2.0 发行说明」。
   两种写法都实测过，报错都看不出来。
@@ -788,7 +830,9 @@ TQ1.0 三值量化推理引擎，1.58 bit/权重，5 trits/byte。**它自己的
 - `models/` 下还有几个未接脚本的模型：`Qwen3-1.7B-Q4_K_M.gguf`、
   `LFM2.5-8B-A1B-UD-IQ2_M.gguf`、`Ornith-1.0/1.5-9B-IQ4_XS.gguf`、
   `qwen2.5-coder-3b-instruct-q2_k.gguf`、`Bonsai-1.7B-Q1_0.gguf`。
-- `agent-sakthai.cmd` **必须和 `sak_template.jinja` 放在一起**（在仓库根目录，
-  脚本用 `%~dp0` 定位）。换掉它工具调用就全废，见 4.16。
+- `agent-sakthai.cmd` 会连着起两个进程：`llama-server`（8084）+ `sakfix.py`
+  归一化代理（8085）。关窗口只收 server，代理要另外
+  `Stop-Process -Name python -Force`（或按脚本提示的手动重启命令）。
+  8085 已经被上一次残留的代理占着时脚本会警告，先清掉再起。
 - `.cmd` 全部是纯 ASCII（代码页 936 会把中文注释里的字节错配成管道符并执行），
   改这些脚本时注释也只能写英文。

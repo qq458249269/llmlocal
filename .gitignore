@@ -31,3 +31,7 @@ _srv*.log
 /1
 /18)
 /f16
+
+# ---- sakfix 代理出错时落的请求/错误原文（复现用）----
+sakfix_last_*.json
+sakfix_last_*.txt
