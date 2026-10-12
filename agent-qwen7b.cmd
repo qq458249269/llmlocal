@@ -7,7 +7,7 @@ rem    -c 32768 -ctk q8_0 -> native 32k window, KV 0.88 GiB
 rem    total RSS ~6 GiB, so MAXRAM=9 keeps Windows happy
 rem
 rem  This file is deliberately pure ASCII - cmd.exe mis-decodes UTF-8
-rem  .cmd files on codepage 936. See agent-lfm25.cmd for the full
+rem  .cmd files on codepage 936. See agent-lfm12-fast.cmd for the full
 rem  list of traps (no "|" on a set line, etc).
 rem
 rem  Docs: README-qwen.md

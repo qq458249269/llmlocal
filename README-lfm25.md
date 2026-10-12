@@ -12,7 +12,7 @@ llama.cpp：本地 `Bonsai-demo\bin\cpu\`（PrismML fork **b10743 / commit adfff
 
 | 脚本 | 用途 |
 |---|---|
-| `agent-lfm25.cmd` | **agent 用这个**。OpenAI 兼容 server，`http://127.0.0.1:8080/v1` |
+| `agent-lfm12-fast.cmd` | **agent 只读/问答用这个**。OpenAI 兼容 server，`http://127.0.0.1:8080/v1`；写文件改用 `agent-lfm26.cmd` |
 
 顶部 `set "PICK=fast"` 切模型：
 
@@ -172,7 +172,7 @@ print(c.report())      # 调用数 / 复用率 / 平均 prefill / 缓存省下�
 
 | 文件 | 作用 |
 |---|---|
-| `agent-lfm25.cmd` | 启动 server（agent 用） |
+| `agent-lfm12-fast.cmd` | 启动 server（只读/问答；写文件用 `agent-lfm26.cmd`） |
 | `llm_client.py` | 前缀缓存友好的 OpenAI 客户端封装 |
 | `agent_loop.py` | 5 轮真实 agent 循环：工具命中率 / 收尾率 / 缓存复用 / 速度 |
 | `tool_test.py` | 3 用例 tool_calls 冒烟，退出码 0/1 |
@@ -237,7 +237,7 @@ draft acceptance = 0.00000 (  0 accepted / 780 generated), mean len = 1.00
 
 cmd.exe（codepage 936）会把 UTF-8 `.cmd` 的非 ASCII 字节错配成管道符执行，
 **`rem` 注释里的 `|` 也一样会执行** —— `set "PICK=fast" rem a | b` 会被拆成管道，
-真的去运行 `b`。`agent-lfm25.cmd` 因此保持纯 ASCII、全文无 `|`，
+真的去运行 `b`。`agent-lfm12-fast.cmd` 因此保持纯 ASCII、全文无 `|`，
 连 `set "X=!Y:|=+!"` 这种替换写法都不能用（改成直接 `for /f ... do echo` 打印）。
 
 ### 测速前先确认只有一个 llama-server

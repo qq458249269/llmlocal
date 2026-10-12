@@ -7,7 +7,7 @@ fs_probe.py — 复现 pi 里 LFM 模型「写不了文件」的那个场景，�
     PYTHONIOENCODING=utf-8 python fs_probe.py [端口] [模型alias] [temp] [--clean]
 
     python fs_probe.py 8080 lfm25-2.6b 0.1 --clean     # 2.6B（quality）
-    python fs_probe.py 8083 lfm25-1.2b 0.1 --clean     # 1.2B（fast）
+python fs_probe.py 8080 lfm25-1.2b 0.1 --clean     # 1.2B（fast）
 
 为什么需要这个脚本（2026-10-12 实测）:
     pi + lfm25-1.2b，用户说「新建一个1.txt 写入今天的天气」。

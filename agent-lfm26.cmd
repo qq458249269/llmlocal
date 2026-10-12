@@ -35,7 +35,8 @@ REM -------------------------- knobs --------------------------
 set "MODEL=%~dp0models\LFM2.5-2.6B-Q4_K_M.gguf"
 set "ALIAS=lfm25-2.6b"
 REM 8080 is what ~/.pi/agent/models.json points at; 8081 MiniCPM5,
-REM 8082 8B-A1B, 8083 the 1.2B fast script.  Only one at a time.
+REM 8082 8B-A1B, 8084 SakThai.  The 1.2B (agent-lfm12-fast.cmd) also
+REM uses 8080 -- one at a time.  Only one server at a time.
 set "PORT=8080"
 REM 16384, not 32768: --context-shift is on, so -c is the ceiling the
 REM sliding window uses, and current KV length is what actually costs
@@ -77,7 +78,11 @@ set "CMS=256"           rem --checkpoint-min-step. Default 8192 is far
 REM                       too coarse for an agent -- a 754-token prefix
 REM                       could never build a checkpoint.
 set "CPCREUSE=64"       rem --cache-reuse: min chunk for KV-shifting
-set "NPAR=1"            rem parallel slots; >1 splits CTX between them
+REM parallel slots; more than 1 splits CTX between them.  NOTE: the
+REM ">" of the old "rem >1" wording had to go: it sits OUTSIDE the
+REM quotes of the set line below, so cmd parsed it as a redirect and
+REM tried to write to a file named "1" in this directory.
+set "NPAR=1"
 set "LOWPRI=1"          rem BelowNormal so the desktop stays smooth
 REM Sampling MUST match the model card: temp 0.1 / top_k 50 /
 REM repeat 1.1.  LFM2.5 is trained in a low-entropy regime -- raising
@@ -126,7 +131,10 @@ REM silently created a 57-byte file literally named "1400".
 REM This file is deliberately pure ASCII: cmd.exe decodes UTF-8 .cmd on
 REM codepage 936 and mis-pairs non-ASCII bytes into pipe characters,
 REM which then get EXECUTED as commands.
-set "RUN_CTX=%CTX%" & set "RUN_CTK=%CTK%" & set "RUN_T=%THREADS%"
+REM RUN_K is seeded from CTK so a planner that prints nothing still
+REM gives the server a valid kv type.  Seeded before the loop on
+REM purpose: the loop below overwrites it only if the planner answered.
+set "RUN_CTX=%CTX%" & set "RUN_CTK=%CTK%" & set "RUN_T=%THREADS%" & set "RUN_K=%CTK%"
 set "PSPLAN=powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0llama-plan.ps1" -Size lfm25 -Ctx %RUN_CTX% -CtK %RUN_CTK% -Threads %RUN_T% -MaxRam %MAXRAM% -MaxThreads %MAXT% -HeadroomPct 10"
 for /f %%c in ('%PSPLAN% -Only CTX')   do set "RUN_CTX=%%c"
 for /f %%k in ('%PSPLAN% -Only CTK')   do set "RUN_K=%%k"
@@ -134,18 +142,40 @@ for /f %%t in ('%PSPLAN% -Only THREADS') do set "RUN_T=%%t"
 echo [PLAN] ctx=%RUN_CTX%  kv=^>%RUN_K%  threads=%RUN_T%
 for /f "tokens=*" %%v in ('%PSPLAN% -Only NOTE') do echo   [auto] %%v
 
+REM ---- refuse to start when even the smallest plan does not fit ----
+REM agent-lfm25.cmd (now folded into agent-lfm12-fast.cmd) already had
+REM this; lfm26 was the only script that
+REM started anyway and let llama-server get OOM-killed two minutes
+REM later, which reads as "the model is broken" rather than "no RAM".
+set "PLAN_ERR=0"
+for /f %%e in ('%PSPLAN% -Only ERROR') do set "PLAN_ERR=%%e"
+if "%PLAN_ERR%"=="1" (
+  echo.
+  echo  [ERR] Not enough RAM headroom for even the smallest plan.
+  for /f "tokens=*" %%n in ('%PSPLAN% -Only NOTE') do echo        %%n
+  echo        Close some apps and run again, or lower CTX in this file.
+  pause & exit /b 1
+)
+
 netstat -ano | findstr /R /C:":%PORT% .*LISTENING" >nul 2>&1
 if not errorlevel 1 echo [WARN] port %PORT% already in use -- stop that server first
 
-REM ---- launch: detached, BelowNormal so the desktop stays smooth ----
+REM ---- launch: FOREGROUND, BelowNormal so the desktop stays smooth ----
+REM FOREGROUND on purpose (it used to be `start "" /min powershell`,
+REM which detached the server and let this window close instantly).
+REM Detaching cost two things: Ctrl+C in the window no longer stopped
+REM the server -- you had to remember Stop-Process -- and every banner
+REM line printed AFTER the launch line was invisible, because the window
+REM was already gone.  Same shape as agent-lfm12-fast.cmd: the server
+REM log lands in this window, Ctrl+C here stops it.
 REM --jinja is MANDATORY, do not drop it: it loads the chat template
 REM baked into the GGUF (supports_tools=true).  Without it this model
 REM emits calls as plain prose and tool_calls comes back empty -- it
 REM looks exactly like "the model has no tool support".
-start "" /min powershell -NoProfile -Command "$p=Start-Process -FilePath '%SERVE%' -ArgumentList '-m','%MODEL%','--alias','%ALIAS%','-ngl','0','-fa','on','-c','%RUN_CTX%','-ctk','%CTK%','-ctv','%CTV%','-t','%RUN_T%','-tb','%TB%','-ub','%UB%','-n','0','--host','127.0.0.1','--port','%PORT%','--parallel','%NPAR%','--cache-ram','%CACHEMB%','--ctx-checkpoints','%CTXCP%','--checkpoint-min-step','%CMS%','--cache-reuse','%CPCREUSE%','--cache-idle-slots','--context-shift','--jinja','-rea','off','--temp','%TEMP%','--top-k','%TOPK%','--repeat-penalty','%REPEAT%' -NoNewWindow -PassThru; $p.PriorityClass='BelowNormal'"
+set "ARGS=-m %MODEL% --alias %ALIAS% -ngl 0 -fa on -c %RUN_CTX% -ctk %RUN_K% -ctv %RUN_K% -t %RUN_T% -tb %TB% -ub %UB% -n 0 --host 127.0.0.1 --port %PORT% --parallel %NPAR% --cache-ram %CACHEMB% --ctx-checkpoints %CTXCP% --checkpoint-min-step %CMS% --cache-reuse %CPCREUSE% --cache-idle-slots --context-shift --jinja -rea off --temp %TEMP% --top-k %TOPK% --repeat-penalty %REPEAT%"
 
 echo.
-echo [RUN] %ALIAS%  ctx=%RUN_CTX%  KV=%CTK%  t=%RUN_T%  tb=%TB%  ub=%UB%  port=%PORT%
+echo [RUN] %ALIAS%  ctx=%RUN_CTX%  KV=%RUN_K%  t=%RUN_T%  tb=%TB%  ub=%UB%  port=%PORT%
 echo       decode  ~10.3 t/s, prefill ~65.5 t/s
 echo       memory  ~2.1 GiB at 16384 f16.  prefix cache ON
 echo       (cache-ram=%CACHEMB% MiB, ctx-checkpoints=%CTXCP%,
@@ -156,15 +186,23 @@ echo.
 echo       test   : cd /d %~dp0 ^& set AGENT_MAXTOK=%MAXX% ^& python tool_test.py %PORT% %ALIAS% %TEMP%
 echo       files  : cd /d %~dp0 ^& set AGENT_MAXTOK=%MAXX% ^& python fs_probe.py %PORT% %ALIAS% %TEMP% --clean
 echo       loop   : cd /d %~dp0 ^& set AGENT_MAXTOK=%MAXX% ^& python agent_loop.py 5 %PORT% %ALIAS% %TEMP%
-echo       stop   : powershell -c "Stop-Process -Name llama-server -Force"
+echo       stop   : Ctrl+C in THIS window (or powershell -c "Stop-Process -Name llama-server -Force")
 echo.
 
 REM ---- optional: prefill the agent prefix in the background ----
+REM It polls /health first, so it is safe to start before the server.
 if "%WARM%"=="1" (
   echo [WARM] waiting for server, then prefilling the frozen agent prefix ...
   start "warm" /min powershell -NoProfile -Command "for($i=0;$i -lt 180;$i++){try{if((Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 'http://127.0.0.1:%PORT%/health').StatusCode -eq 200){break}}catch{};Start-Sleep 1}; $env:AGENT_MAXTOK='%MAXX%'; python '%~dp0agent_loop.py' 0 %PORT% %ALIAS% --warm"
 ) else (
   echo [WARM] off -- set WARM=1 to prefill the agent_loop.py prefix at startup
+)
+
+REM ---- go foreground: this blocks until the server exits ----
+if "%LOWPRI%"=="1" (
+  powershell -NoProfile -Command "$p = Start-Process -FilePath '%SERVE%' -ArgumentList '%ARGS%' -NoNewWindow -PassThru; $p.PriorityClass = 'BelowNormal'; $p.WaitForExit()"
+) else (
+  "%SERVE%" %ARGS%
 )
 echo.
 echo [done] server stopped.

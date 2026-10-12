@@ -17,7 +17,7 @@
 :: 1. 双击一个启动脚本（保持窗口不关，关窗口 = 停服务）
 agent-lfm25-8b.cmd          :: 推荐：工具调用 agent 用这个，端口 8082
 agent-lfm26.cmd              :: 要写文件/改代码用这个，路径最准，端口 8080
-agent-lfm12-fast.cmd         :: 只要快、不写文件用这个，端口 8083
+agent-lfm12-fast.cmd         :: 只要快、不写文件用这个，端口 8080（与上面互斥）
 agent-sakthai.cmd            :: 最快的底座（35.7 t/s），端口 8084，**工具调用走 8085 代理**
 
 :: 2. 另开一个 cmd 验证
@@ -61,10 +61,8 @@ powershell -c "Stop-Process -Name llama-server -Force"
 |---|---|---|---|---|---|---|---|
 | `agent-sakthai.cmd` | SakThai Context 0.5B Q4_K_M | 0.37 GiB | 8084 → **8085 代理** | **35.7 t/s** | 213 t/s | ✅ 4/4（经代理） | ⚠️ **最快**，但只能只读/问答（见 4.16） |
 | `agent-minicpm5-1b.cmd` | MiniCPM5-1B Q4_K_M | 0.64 GiB | 8081 | **26.8 t/s** | 215 t/s | ❌ 拒绝 | 起草/摘要/长上下文预热 |
-| `agent-lfm12-fast.cmd` | LFM2.5-1.2B-Instruct Q4_K_M | 0.68 GiB | 8083 | **21.7 t/s** | 163 t/s | ✅ 3/3 | ⭐ **最快的 agent 底座**（2k→16k 零衰减） |
-| `agent-lfm25.cmd` | LFM2.5-1.2B-Instruct Q4_K_M | 0.68 GiB | 8080 | **24 t/s** | 176 t/s | ✅ 3/3 | 快的 agent 底座 |
-| `agent-lfm25.cmd` | LFM2.5-2.6B Q4_K_M（`PICK=quality`） | 1.56 GiB | 8080 | 10.3 t/s | 65.5 t/s | ✅ 3/3 | 参数更准（路径不打错） |
-| `agent-lfm26.cmd` | 同上，**独立脚本**（不用切 PICK） | 1.56 GiB | 8080 | 10.3 t/s | 65.5 t/s | ✅ 3/3 | ⭐ **agent 要写文件就用它** |
+| `agent-lfm12-fast.cmd` | LFM2.5-1.2B-Instruct Q4_K_M | 0.68 GiB | 8080 | **21.7 t/s** | 163 t/s | ✅ 3/3 | ⭐ **最快的 agent 底座**（2k→16k 零衰减） |
+| `agent-lfm26.cmd` | LFM2.5-2.6B Q4_K_M | 1.56 GiB | 8080 | 10.3 t/s | 65.5 t/s | ✅ 3/3 | ⭐ **agent 要写文件就用它**（路径不打错） |
 | `agent-lfm25-8b.cmd` | LFM2.5-8B-A1B Q4_K_M | 4.96 GiB | 8082 | 13.5 t/s | 79.7 t/s | ✅ | ⭐ **真实工具循环首选** |
 | `agent-bonsai17b.cmd` | Ternary-Bonsai-1.7B-PQ2_0 | 0.43 GiB | 8080 | **34 t/s** | 47.9 t/s | ✅ | 纯聊天最快，32k 原生窗口 |
 | `agent-ornith9b.cmd` | Ornith-1.5-9B Q4_K_M | 5.50 GiB | 8080 | 2.9 t/s | 25.5 t/s | ✅ | ⭐ **写代码最强**，262k 上下文 |
@@ -86,7 +84,7 @@ powershell -c "Stop-Process -Name llama-server -Force"
 
 ### 该选哪个
 
-- **只要快 + 要调工具** → `agent-lfm12-fast.cmd`（端口 8083）。decode 21.7 t/s 且
+- **只要快 + 要调工具** → `agent-lfm12-fast.cmd`（端口 8080）。decode 21.7 t/s 且
   **2k→16k 零衰减**，16k 上下文只占 1.2 GiB，5 轮循环 16.7 s。
 - **只要快** → `agent-sakthai.cmd`（**端口 8085 代理**，35.7 t/s，397 MB）。
   快 1.6 倍，工具调用经 `sakfix.py` 归一化后 `agent_loop.py` 5/5 轮全对；
@@ -414,7 +412,7 @@ LFM2.5 家族（后者原生返回 OpenAI `tool_calls`，已验证 3/3）。
 
 ### 4.13 `agent-lfm12-fast.cmd`：实测调优配置
 
-基于上表的实测数据新建的专用脚本（端口 8083）。`llama-bench -t 4 -ub 512 -n 32`：
+基于上表的实测数据新建的专用脚本（端口 8080，与 `agent-lfm26.cmd` 互斥）。`llama-bench -t 4 -ub 512 -n 32`：
 
 | 上下文 | tg32 | pp |
 |---|---|---|
@@ -445,7 +443,7 @@ agent_loop.py  -> 5 轮 16.7 s | 21.5 t/s | 前缀复用 84.8% | 收尾作答 4/
 
 ⚠️ **已知短板**：1.2B 偶尔会把路径打错（实测把 `D:/AI/LLMLocal/models`
 写成了 `D:/AI/LLMLocal/models` 的错拼变体）。**agent 要执行文件路径时，
-必须在客户端校验每条路径**，或改用 `agent-lfm25.cmd` 的 `PICK=quality`。
+必须在客户端校验每条路径**，或改用 `agent-lfm26.cmd`（2.6B，端口 8080）。
 
 ### 4.14 工具能返回 ≠ 能干活：`fs_probe.py` 实测
 
@@ -781,9 +779,15 @@ bash dl.sh <owner/repo> <file.gguf> models [分片数]
   并**真的执行注释尾巴**（`rem` 里的 `|` 也一样）。`set` 行里禁止出现 `|`。
 - `echo` 里的 `>` 必须转义成 `^>`，否则整行被重定向进文件 —— 症状是工作目录里
   莫名其妙冒出 `-c`、`18)`、`1` 这类 0 字节的垃圾文件（`>f16` 被解析成了重定向）。
-  `rem` 行里的 `>` 没事，只有 `echo` 会中招。2026-10-12 写 `agent-lfm26.cmd` 时
-  又踩了一次：`echo ... max_tokens >= 1400` 生成了一个**57 字节**的 `1400` 文件，
-  里面是被吞掉 `>= 1400` 的那行文字。
+  2026-10-12 写 `agent-lfm26.cmd` 时又踩了一次：`echo ... max_tokens >= 1400` 生成了
+  一个**57 字节**的 `1400` 文件，里面是被吞掉 `>= 1400` 的那行文字。
+- **`rem` 行里的 `>` 也不安全**（旧版本这里写着「只有 `echo` 会中招」，是错的）。
+  2026-10-13 实测：`set "NPAR=1"  rem slots; >1 splits CTX` 的 `>` 在引号**外面**，
+  是真重定向 —— 仓库根目录那个 0 字节的 `1` 就是它，每次启动都重建一次。
+  更糟的情况：若同名目标是**目录**或被别的进程锁住，整行 `set` 会失败，
+  `NPAR` 变空 → llama-server 收到裸 `--parallel`。已把两个脚本的这条注释改成
+  「more than 1」，并删掉垃圾文件。注意 `set "X=...>..."` **引号内**的 `>` 是安全的，
+  真正危险的是引号外的（含 `echo %VAR%` 间接带出来的）。
 - `%ARCH%.` 不能写成 `%ARCH%\.`（反斜杠原样传给进程，`--override-kv` 失效）。
 - `for /f` 取值要加 `tokens=*`，否则带空格的 NOTE 被截断。
 - PowerShell 脚本要 `-ExecutionPolicy Bypass`。

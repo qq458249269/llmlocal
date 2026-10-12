@@ -57,7 +57,7 @@ REM -------------------------- knobs --------------------------
 set "MODEL=%~dp0models\sakthai-0.5b-Q4_K_M.gguf"
 set "TPL=%~dp0sak_template.jinja"
 set "ALIAS=sakthai-0.5b"
-REM 8080 LFM2.5-2.6B / 8082 8B-A1B / 8083 1.2B / 8084 this script
+REM 8080 LFM2.5-2.6B / 8080 LFM2.5-1.2B / 8082 8B-A1B / 8084 this script
 set "PORT=8084"
 REM 8085 = sakfix.py 归一化代理的监听端口（客户端一律指这个）
 set "FIXPORT=8085"
