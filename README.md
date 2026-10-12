@@ -6,8 +6,11 @@
 
 **硬件基线**：i5-8500（6 核 6 线程，AVX2，无 AVX512/VNNI）· 19.86 GiB 内存 · 无独显
 （仅 UHD 630 iGPU）· DDR4 实测带宽 ~16 GB/s
-**推理引擎**：llama.cpp **PrismML fork b10743 / commit adfffbe41**
+**推理引擎**：默认 llama.cpp **PrismML fork b10743 / commit adfffbe41**
 （必须用 `Bonsai-demo/bin/cpu/`，见「坑」一节）
+**2.6B 专用引擎**：**ik_llama.cpp @ `1a88bc0`，本机自编译 AVX2**（`ik_llama-src/build/bin/`）。
+它的 IQK FlashAttention CPU kernel 直接吃量化 KV，**预填充比旧引擎快 32~60%**，
+`agent-lfm26.cmd` 已切过去，见 4.17。其余脚本仍用 b10743。
 
 ---
 
@@ -42,10 +45,12 @@ powershell -c "Stop-Process -Name llama-server -Force"
 | 其他显卡 | AMD R7 200 Series / Todesk 虚拟显示器 | 同样不可用 |
 | 磁盘 | C: 238.5 GiB（剩 53.6）· D: 931.2 GiB（剩 472.9） | 权重全部放 D: |
 | OS | Windows 10 企业版 LTSC 19044（**代码页 936**） | 这一条决定了 `.cmd` 必须是纯 ASCII，见 6 |
-| 引擎 | llama.cpp **PrismML fork build 10743 / commit adfffbe41** | Clang 20.1.8，只用 `Bonsai-demo/bin/cpu/` |
+| 引擎（默认） | llama.cpp **PrismML fork build 10743 / commit adfffbe41** | Clang 20.1.8，只用 `Bonsai-demo/bin/cpu/` |
+| 引擎（2.6B 用） | **ik_llama.cpp `1a88bc0`，自编译 AVX2** | `ik_llama-src/build/bin/`，只有 2.6B 在用，见 4.17 |
 | 引擎源码 | `llama-cpp-src` @ `81ef10e`（上游 ggml-org/llama.cpp） | 改 Q2_0 支持时对照用 |
 | 子项目 | `Bonsai-demo` @ `9ef3205`（PrismML-Eng/Bonsai-demo） | 二进制来源 |
-| 工具链 | Python 3.14.5 · Git 2.55.0 | 打印中文需要 `PYTHONIOENCODING=utf-8` |
+| 子项目 | `ik_llama-src` @ `1a88bc0`（ikawrakow/ik_llama.cpp） | 自编译，构建脚本见 4.17 |
+| 工具链 | Python 3.14.5 · Git 2.55.0 · **MSYS2 gcc 16.2.0 + cmake 4.4.3 + ninja 1.13.2** | 打印中文需要 `PYTHONIOENCODING=utf-8`；编译器装在 `C:\msys64` |
 | 空闲内存 | 实测 3.5–8.5 GiB 波动 | 所以每个启动脚本都现场跑 `llama-plan.ps1` 降级 |
 
 **换机器时必须重测的三件事**：`llama-bench -p 2048`（**`-p 0` 的 tg 只在部分模型上可信**，见 6）、
@@ -62,7 +67,7 @@ powershell -c "Stop-Process -Name llama-server -Force"
 | `agent-sakthai.cmd` | SakThai Context 0.5B Q4_K_M | 0.37 GiB | 8084 → **8085 代理** | **35.7 t/s** | 213 t/s | ✅ 4/4（经代理） | ⚠️ **最快**，但只能只读/问答（见 4.16） |
 | `agent-minicpm5-1b.cmd` | MiniCPM5-1B Q4_K_M | 0.64 GiB | 8081 | **26.8 t/s** | 215 t/s | ❌ 拒绝 | 起草/摘要/长上下文预热 |
 | `agent-lfm12-fast.cmd` | LFM2.5-1.2B-Instruct Q4_K_M | 0.68 GiB | 8080 | **21.7 t/s** | 163 t/s | ✅ 3/3 | ⭐ **最快的 agent 底座**（2k→16k 零衰减） |
-| `agent-lfm26.cmd` | LFM2.5-2.6B Q4_K_M | 1.56 GiB | 8080 | 10.3 t/s | 65.5 t/s | ✅ 3/3 | ⭐ **agent 要写文件就用它**（路径不打错） |
+| `agent-lfm26.cmd` | LFM2.5-2.6B Q4_K_M | 1.56 GiB | 8080 | 8.6 t/s | **88.5 t/s** | ✅ 3/3 | ⭐ **agent 要写文件就用它**（路径不打错）；已换 ik_llama.cpp 引擎，见 4.17 |
 | `agent-lfm25-8b.cmd` | LFM2.5-8B-A1B Q4_K_M | 4.96 GiB | 8082 | 13.5 t/s | 79.7 t/s | ✅ | ⭐ **真实工具循环首选** |
 | `agent-bonsai17b.cmd` | Ternary-Bonsai-1.7B-PQ2_0 | 0.43 GiB | 8080 | **34 t/s** | 47.9 t/s | ✅ | 纯聊天最快，32k 原生窗口 |
 | `agent-ornith9b.cmd` | Ornith-1.5-9B Q4_K_M | 5.50 GiB | 8080 | 2.9 t/s | 25.5 t/s | ✅ | ⭐ **写代码最强**，262k 上下文 |
@@ -72,6 +77,8 @@ powershell -c "Stop-Process -Name llama-server -Force"
 > SakThai 0.5B 的 35.7 t/s 是**短上下文**实测值；它的 KV 是 24 层全存（12 KiB/token），
 > 8k 掉到 17.9、16k 掉到 9.7，比 LFM2.5-1.2B（2k→16k 零衰减）衰减快得多。
 > 「生成」列一律是短上下文的数字，长对话请查 4.6 的曲线。
+> 2.6B 那一行的两个数字是 `llama-bench -t 4 -p 2048` 的实测（与 4.17 表同源），
+> 换引擎后跟旧表里 10.3 / 65.5 那组不可直接比。
 
 **真实 agent 前缀端到端**（`agent_loop.py --warm`，含 system + 3 工具）：
 
@@ -142,8 +149,10 @@ LLMlocal/
 │  └─ bin/cpu/                  ← ⭐ 实际使用的 llama.cpp 二进制（b10743）
 ├─ bin-vulkan/                  ← Vulkan 构建（故意不放进 Bonsai-demo/bin，避免误选）
 ├─ llama-cpp-src/               ← llama.cpp 源码（ggml-org/llama.cpp，参考用）
+├─ ik_llama-src/               ← ik_llama.cpp 源码 + 自编译产物（**不入库**）
+│  └─ build/bin/                ← ⭐ 2.6B 实际使用的 ik 引擎（AVX2，见 4.17）
 ├─ ATLAS-engine/                ← ATLAS TQ1.0 三值推理引擎（独立 C/C++ 项目）
-└─ .gitignore                   ← 上面四个带「不入库」的都是排除项
+└─ .gitignore                   ← 上面带「不入库」的都是排除项
 
 ---
 
@@ -507,6 +516,8 @@ agent_loop.py  -> 5 轮 16.7 s | 21.5 t/s | 前缀复用 84.8% | 收尾作答 4/
 问题：decode 只有 10.3 t/s，对话长了掉到 6 t/s。**先算天花板**：
 1.55 GiB 权重 ÷ 15.3 GB/s = 9.94 t/s —— 实测 9.18~10.1，**已经在带宽墙上**，
 所以任何不减少「每 token 要读的字节数」的旋钮都动不了它。
+（本节全部数字是 b10743 引擎下的；2.6B 现在跑 ik_llama.cpp，预填充已从 65.5
+提到 88.5 t/s，decode 仍是 8.6 —— 天花板结论不变，见 4.17。）
 
 **内存锁定：+6%，值得加**（`llama-bench -p 0 -n 96 -r 2`，t=4）：
 
@@ -547,6 +558,9 @@ agent_loop.py  -> 5 轮 16.7 s | 21.5 t/s | 前缀复用 84.8% | 收尾作答 4/
   手段是 `--context-shift` + 客户端别把整份历史原样回灌 + 控制单文件读取量。
 - ⚠️ KV 量化在这个模型上收益 <10%（KV 只占 12% 流量），且会伤 prefill，
   本轮没测完，优先级低。`ctxtune.sh` 是为这件事写的批量对比脚本。
+  **补测结论见 4.17**：伤 prefill 的是**旧引擎**（b10743 q8_0 把 pp 从 67.2 打到
+  55.2），换 ik_llama.cpp 后同一个 q8_0 是 88.5，比 f16 还快。机制不一样，
+  别把这里的结论搬到新引擎上。
 
 **投机解码：这条路是堵死的。** `LFM2.5-1.2B` 的词表 65536、
 `LFM2.5-2.6B` 是 128000，而且**前 65536 个 token 一个都不重合**（不是子集关系，
@@ -647,6 +661,76 @@ system）实测同样 0/8，temp 降到 0.1 也一样。结论是**格式不稳�
 **路径幻觉没解决** —— 只读查询 / 分类 / 摘要可以用，真要落盘写代码仍然回
 `agent-lfm26.cmd`。如果只是想要「更快的小模型」，`agent-lfm12-fast.cmd`
 （1.2B，21.7 t/s，2k→16k 零衰减，路径偶有笔误）严格优于它。
+
+### 4.17 自编译 ik_llama.cpp：2.6B 的 FA + 对称 KV 量化
+
+2.6B 的旧引擎预填充只有 65.5 t/s（4.15 的表格），而 agent **每一轮都要等冷预填充**，
+所以预填充比 decode 更值钱。换引擎前先说清两件事：
+
+1. **FA 和量化 KV 在 ik_llama.cpp 里是绑定的。** 这份 fork 的 CPU FlashAttention
+   kernel（F16/Q4_0/Q8_0/Q6_0）是量化 KV 的唯一入口：`-fa 0 -ctk q8_0` 直接
+   `failed to create context`。所以「开 FA」不是可选项，是用 q8_0 的前提。
+2. **「对称」指 q8_0**，不是 q4_1/q5_1。每个 32 元素块一个 fp16 scale，
+   有 IQK FA kernel 实现，质量也比 q4_0 好。
+
+实测（`llama-bench -t 4 -p 2048 -n 128 -r 2`，同一台机器同一个 GGUF）：
+
+| 引擎 / KV | pp2048 | tg128 |
+|---|---|---|
+| b10743 · f16 | 67.2 | 8.76 |
+| b10743 · q8_0 | 55.2 | 8.68 |
+| ik · f16 | 84.8 | 8.61 |
+| **ik · q8_0（agent-lfm26.cmd 现在用这个）** | **88.5** | 8.61 |
+| ik · q4_0 | 83.6 | 8.53 |
+| ik · q8_0 + `-rtr` | 64.5 | 7.59（运行时 repack，纯 CPU 反而亏，别开） |
+
+三点结论：
+
+- **旧引擎上量化 KV 是净亏**（55.2 vs 67.2，因为它在 O(n²) 路径里先反量化），
+  这就是 4.15 里「KV 量化优先级低」的原因；**ik 上变成净赚**（88.5 > 84.8），
+  因为 FA kernel 直接按量化块读 KV。所以旧注释「f16 赢」在新引擎上反了。
+- **decode 没变**（8.6 vs 8.8），依旧在带宽墙上 4.15 说过的天花板里。
+  换引擎换来的是预填充 +32%（对 f16）、对同配置旧引擎 +60%（q8_0），外加 KV 内存减半。
+- 线程：`-pg 0,128` 空 KV 下 t=4 8.31、t=5 8.96、t=6 8.92，脚本仍保守用 t=4
+  （跟旧引擎实测一致：t=6 时内存总线抢带宽反而掉）。
+
+端到端（`agent_loop.py 5`，端口 8080）：冷预填充 869 token **10.12 s**（旧引擎同场景
+82.6 s），热轮 0.7–1.5 s，前缀复用 **85.7%**，工具 4/4 名称全对，
+`tool_test.py` 3/3，`fs_probe.py` 明确轮真落盘 PASS。
+
+**构建（这台机器上从零搞出来的，脚本在 `C:\msys64\tmp\build_ik.sh`）**：
+
+```bash
+export PATH="/mingw64/bin:$PATH"
+cmake -S /d/AI/LLMlocal/ik_llama-src -B /d/AI/LLMlocal/ik_llama-src/build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_FLAGS="-D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00" \
+  -DCMAKE_CXX_FLAGS="-D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00" \
+  -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON \
+  -DGGML_IQK_FLASH_ATTENTION=ON -DGGML_IQK_FA_ALL_QUANTS=ON \
+  -DGGML_OPENMP=ON -DGGML_CCACHE=OFF \
+  -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_BUILD_SERVER=ON
+cmake --build .../build --target llama-server llama-bench -j 6
+```
+
+- `-DGGML_NATIVE=OFF` + 显式 AVX2/FMA/F16C：要的是**可复现的 AVX2 基线**，不是
+  「在这台机器上碰巧解析成什么」。
+- `-DLLAMA_BUILD_EXAMPLES=ON` 是必须的：`server` 和 `llama-bench` 都挂在
+  `examples/` 子目录下，关掉 examples 就 `unknown target 'llama-server'`。
+- 产物 `build/bin/llama-server.exe`（45.6 MB）+ `llama-bench.exe`（37.3 MB），
+  旁边要放 MSYS2 的 `libgomp-1.dll` / `libgcc_s_seh-1.dll` / `libwinpthread-1.dll` /
+  `libstdc++-6.dll`，否则启动就是 `0xC0000135`（一个字节都不输出，只返回码）。
+
+**CLI 兼容性：换引擎必须同步改脚本。** 这个 fork 删/改了三个 flag，
+照抄旧脚本会直接启动失败：
+
+| 旧脚本（b10743） | ik_llama.cpp | 处理 |
+|---|---|---|
+| `--checkpoint-min-step N` | `--ctx-checkpoints-interval N` | 改名 |
+| `--cache-reuse N` | **不存在** | 删 |
+| `--cache-idle-slots` | **不存在** | 删 |
+| `--context-shift`（无参） | `--context-shift on`（要参数） | 加值 |
+| `-fa on` | `-fa 1`（`on` 也收，但 bench 用 1） | 不变也行 |
 
 ## 5. 工具脚本
 
@@ -798,6 +882,32 @@ bash dl.sh <owner/repo> <file.gguf> models [分片数]
 - `nohup ... &` 起的 llama-server 随 bash 会话退出被杀 → 用
   `Start-Process ... -NoNewWindow -PassThru` + `$p.PriorityClass='BelowNormal'`。
 - `Stop-Process -Name` 常杀不掉，按 PID 强杀。
+- **装 C++ 编译器（编 ik_llama.cpp，见 4.17）**：
+  - `choco install mingw` 在这台机器上会卡死在两件事上：包校验和
+    （`hashes do not match`，只能 `--ignore-checksums`），以及 **21 KB/s 的下载**
+    （102 MB 要 80 分钟）。换成 MSYS2 + 国内镜像 5 分钟搞定：
+    `C:\msys64\base.sfx.exe -y -oC:\` 解压后把
+    `/etc/pacman.d/mirrorlist.{mingw,msys}` 第一行改成
+    `https://mirrors.ustc.edu.cn/msys2/...`，再 `pacman -S --needed --noconfirm
+    mingw-w64-x86_64-gcc mingw-w64-x86_64-cmake mingw-w64-x86_64-ninja
+    mingw-w64-x86_64-libgomp`（**libgomp 要单独装**，不在 gcc-libs 里，
+    缺了 CMake 报 `Could NOT find OpenMP`，FA 少了并行收益）。
+  - `Start-Process -ArgumentList 'a && b'` 会被 PowerShell 按空格拆开，
+    写成脚本文件再 `bash -l /tmp/x.sh`。
+- **cpp-httplib 在 MinGW 上编译失败**：`'::CreateFile2' has not been declared`。
+  MinGW 只在 `_WIN32_WINNT >= 0x0A00` 时声明 `CreateFile2`，而 fork 只把
+  `GGML_WIN_VER` 用在自己身上，没传给 vendor。要在
+  `-DCMAKE_C_FLAGS` / `-DCMAKE_CXX_FLAGS` 里显式加
+  `-D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00`。
+- `-DLLAMA_BUILD_EXAMPLES=OFF` 会让 `llama-server` / `llama-bench` **没有 target**
+  （它们挂在 `examples/` 下），报 `ninja: error: unknown target 'llama-server'`。
+- 自编的 `llama-server.exe` 缺 MSYS2 运行时 DLL 时**不报错**，只返回
+  `0xC0000135`，一个字符都不输出。症状是 `./llama-server.exe -h` 完全没反应。
+  把 `libgomp-1.dll` / `libgcc_s_seh-1.dll` / `libwinpthread-1.dll` /
+  `libstdc++-6.dll` 拷到 `build/bin/` 即可（拷进去之前先想好：
+  仓库不入库DLL，别的机器自己装一遍）。
+- `-fa on` 在 `llama-bench` 里是**无效值**：bench 只收 `0|1`，传 `on` 会被当成
+  关 FA（表格里 `fa` 列显示 0）。对照实验时这会静默反转结论。
 
 ---
 
@@ -825,10 +935,14 @@ TQ1.0 三值量化推理引擎，1.58 bit/权重，5 trits/byte。**它自己的
 ## 维护提示
 
 - **仓库里不包含任何权重和二进制。** `models/`（36.4 GB GGUF）、`Bonsai-demo/`
-  （引擎二进制）、`llama-cpp-src/`、`ATLAS-engine/` 都在 `.gitignore` 里，
+  （引擎二进制）、`llama-cpp-src/`、`ik_llama-src/`、`ATLAS-engine/` 都在 `.gitignore` 里，
   各自是独立仓库。克隆后要自己准备：
   1. 引擎二进制放 `Bonsai-demo/bin/cpu/`（见 `Bonsai-demo` 仓库的 build 说明）
-  2. 权重用 `bash dl.sh <owner/repo> <file.gguf> models` 下（地址见 5.1）
+  2. 2.6B 要自己编译 ik 引擎，见 4.17（含编译器安装，见 6）
+  3. 权重用 `bash dl.sh <owner/repo> <file.gguf> models` 下（地址见 5.1）
+- `agent-lfm26.cmd` 指向 `ik_llama-src/build/bin/llama-server.exe`，
+  **没编过就会自动回退到 b10743 并打印 `[WARN]`**，此时 q8_0 KV 不再是收益而是亏
+  （55.2 vs 67.2）。看到 WARN 先把 4.17 的构建跑一遍。
 - `agent-bonsai8b.cmd` 依赖的 `models/Ternary-Bonsai-8B-PQ2_0.gguf` **当前不存在**，
   该脚本暂时跑不起来。
 - `models/` 下还有几个未接脚本的模型：`Qwen3-1.7B-Q4_K_M.gguf`、

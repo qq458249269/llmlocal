@@ -2,6 +2,10 @@
 
 硬件：i5-8500（6 核）/ 19.9 GB RAM / **无 NVIDIA GPU**
 llama.cpp：本地 `Bonsai-demo\bin\cpu\`（PrismML fork **b10743 / commit adfffbe41**）
+**2.6B 例外**：`agent-lfm26.cmd` 现在跑的是自编译的
+**ik_llama.cpp @ `1a88bc0`（AVX2，`ik_llama-src/build/bin/`）**，FA + q8_0 对称 KV，
+同机 `llama-bench -t 4 -p 2048` 预填充 65.5 → **88.5 t/s**，decode 持平（8.6）。
+构建步骤、CLI 改名坑见 README.md 4.17。下面除 2.6B 外的数字仍是 b10743 的。
 
 结论先讲：这台机器上**默认用 `LFM2.5-1.2B-Instruct`**（24 t/s，原生 tool_calls 3/3 通过）。
 要参数更准（尤其是文件路径）再换 `LFM2.5-2.6B`，代价是慢 2.3 倍。
@@ -74,7 +78,7 @@ hf-mirror 上 bartowski / unsloth / LiquidAI 三个仓库都**没有** IQ2/IQ3/Q
 ## 三、工具调用：原生可用
 
 不用任何 prompt hack。模型输出 Pythonic 风格调用，llama.cpp ≥ b10455 解析成
-标准 OpenAI `tool_calls`（本机 b10743 已含该解析器）。
+标准 OpenAI `tool_calls`（本机 b10743 已含该解析器；ik_llama.cpp 同样自带）。
 
 ```bash
 curl -s http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{

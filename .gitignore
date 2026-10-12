@@ -15,6 +15,7 @@ Bonsai-demo/
 ATLAS-engine/
 llama-cpp-src/
 bin-vulkan/
+ik_llama-src/
 
 # ---- 运行期产物 ----
 probe-sandbox/

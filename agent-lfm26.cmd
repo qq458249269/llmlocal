@@ -44,14 +44,17 @@ REM decode speed.  16384 f16 is ~0.25 GiB of KV, still 20x the real
 REM agent prefix.  2.6B native window is 128k, so this needs no RoPE
 REM extension.  Raise to 32768 only for one-shot long-document work.
 set "CTX=16384"
-REM f16 KV, NOT q8_0/q4_0.  Quantized KV forces llama.cpp to
-REM dequantize K/V inside the O(n^2) prefill path -- measured on the
-REM 8B-A1B: prefill 70.4 -> 36.0 t/s for q4_0.  An agent waits on the
-REM COLD prefill every single turn, so f16 wins.  Here f16 is also
-REM cheap because LFM2.5 only stores KV on its 8 full-attention
-REM layers (the other 22 are short convolutions): 12-16 KiB/token.
-set "CTK=f16"
-set "CTV=f16"
+REM q8_0 KV (symmetric, one fp16 scale per 32-block). Only because the
+REM engine is now ik_llama.cpp (see SERVE below): its IQK FlashAttention
+REM CPU kernels read the quantized KV directly, so there is no dequant
+REM pass in the O(n^2) path.  Measured with llama-bench -t 4 -p 2048
+REM (same model, same box):  ik_llama.cpp f16 pp 84.8 / q8_0 pp 88.5,
+REM old b10743 f16 pp 67.2 / q8_0 pp 55.2 t/s.  So on ik_llama.cpp
+REM q8_0 is FASTER than f16 while halving KV RAM; on the old build it
+REM was the other way round, which is why this line used to say f16.
+REM q4_0 measured 83.6 -- slower than q8_0 here, so do not go lower.
+set "CTK=q8_0"
+set "CTV=q8_0"
 REM -t 4 measured fastest on this 6-core box and leaves 2 cores for
 REM Windows.  Decode is memory-bus-bound, so more threads just fight
 REM for the bus (-t 6 measured 8.56 t/s vs 9.94 at t=4).
@@ -74,10 +77,9 @@ REM                       cold and 0.67 s warm (99.2% reused).  This is a
 REM                       CAP, not a reservation -- it commits nothing
 REM                       until hit, so do NOT lower it to save RAM.
 set "CTXCP=32"          rem --ctx-checkpoints per slot
-set "CMS=256"           rem --checkpoint-min-step. Default 8192 is far
-REM                       too coarse for an agent -- a 754-token prefix
-REM                       could never build a checkpoint.
-set "CPCREUSE=64"       rem --cache-reuse: min chunk for KV-shifting
+set "CMS=256"           rem --ctx-checkpoints-interval. Default 512 is too
+REM                       coarse for an agent -- a 754-token prefix could
+REM                       never build a checkpoint.
 REM parallel slots; more than 1 splits CTX between them.  NOTE: the
 REM ">" of the old "rem >1" wording had to go: it sits OUTSIDE the
 REM quotes of the set line below, so cmd parsed it as a redirect and
@@ -98,7 +100,18 @@ set "MAXX=1400"
 REM WARM=1 prefills the frozen agent prefix in the background at
 REM start-up so the first real question skips the cold prefill.
 set "WARM=0"
-set "SERVE=%~dp0Bonsai-demo\bin\cpu\llama-server.exe"
+REM ik_llama.cpp built for AVX2 (see README). Its IQK FlashAttention
+REM CPU kernels take the quantized KV above straight in the attention
+REM kernel -- that is what makes q8_0 KV a prefill WIN here instead of
+REM the loss it was on b10743.  Falls back to the old engine if you
+REM have not built it yet.
+set "SERVE=%~dp0ik_llama-src\build\bin\llama-server.exe"
+if not exist "%SERVE%" (
+  echo [WARN] ik build missing: %SERVE%
+  echo        falling back to the old engine -- but rebuild it, the new
+  echo        engine is the only reason q8_0 KV is a prefill win.
+  set "SERVE=%~dp0Bonsai-demo\bin\cpu\llama-server.exe"
+)
 REM -----------------------------------------------------------
 
 echo ================================================================
@@ -172,14 +185,14 @@ REM --jinja is MANDATORY, do not drop it: it loads the chat template
 REM baked into the GGUF (supports_tools=true).  Without it this model
 REM emits calls as plain prose and tool_calls comes back empty -- it
 REM looks exactly like "the model has no tool support".
-set "ARGS=-m %MODEL% --alias %ALIAS% -ngl 0 -fa on -c %RUN_CTX% -ctk %RUN_K% -ctv %RUN_K% -t %RUN_T% -tb %TB% -ub %UB% -n 0 --host 127.0.0.1 --port %PORT% --parallel %NPAR% --cache-ram %CACHEMB% --ctx-checkpoints %CTXCP% --checkpoint-min-step %CMS% --cache-reuse %CPCREUSE% --cache-idle-slots --context-shift --jinja -rea off --temp %TEMP% --top-k %TOPK% --repeat-penalty %REPEAT%"
+set "ARGS=-m %MODEL% --alias %ALIAS% -ngl 0 -fa 1 -c %RUN_CTX% -ctk %RUN_K% -ctv %RUN_K% -t %RUN_T% -tb %TB% -ub %UB% -n 0 --host 127.0.0.1 --port %PORT% --parallel %NPAR% --cache-ram %CACHEMB% --ctx-checkpoints %CTXCP% --ctx-checkpoints-interval %CMS% --context-shift on --jinja -rea off --temp %TEMP% --top-k %TOPK% --repeat-penalty %REPEAT%"
 
 echo.
 echo [RUN] %ALIAS%  ctx=%RUN_CTX%  KV=%RUN_K%  t=%RUN_T%  tb=%TB%  ub=%UB%  port=%PORT%
-echo       decode  ~10.3 t/s, prefill ~65.5 t/s
-echo       memory  ~2.1 GiB at 16384 f16.  prefix cache ON
+echo       decode  ~8.6 t/s, prefill ~88.5 t/s (llama-bench -t 4 -p 2048, ik engine)
+echo       memory  ~1.1 GiB at 16384 q8_0 KV (half of f16).  prefix cache ON
 echo       (cache-ram=%CACHEMB% MiB, ctx-checkpoints=%CTXCP%,
-echo        checkpoint-min-step=%CMS%)
+echo        ctx-checkpoints-interval=%CMS%)
 echo       THINKING model -- give every request max_tokens ^>= %MAXX%,
 echo       or it will finish_reason=length with an empty answer.
 echo.
