@@ -53,25 +53,58 @@ REM 18% prefill tax.  At -c 16384 f16 KV is ~0.25 GiB -- RAM is not the
 REM reason to quantize, so do not.
 set "CTK=f16"
 set "CTV=f16"
-REM -t 5 as of 2026-10-13.  -t 4 used to measure fastest on this 6-core box
-REM (-t 6 measured 8.56 t/s vs 9.94 at t=4) and left 2 cores for Windows.
-REM 5 is the compromise: one core still free for the desktop and the pet
-REM animation, and decode is memory-bus-bound so the extra core is nearly
-REM free.  That makes it a wall-clock knob, not a scaling one -- if turns
-REM feel sluggish, put it back to 4.
-set "THREADS=5"
-set "MAXT=5"
-REM -tb 5: prefill wants every core while decode keeps -t 5.  -t and
-REM -tb are independent knobs, so use both.  (llama-bench itself does
-REM NOT accept -tb, so these two numbers cannot be reproduced with it.)
-set "TB=5"
+REM -t 4.  Re-measured on fork b10743 (llama-bench -p 1024 -n 64 -r 2, 2.6B
+REM Q4_K_M, this box, 2026-10-20):
+REM       threads    4       5       6
+REM       decode   9.50   10.12    6.82   t/s
+REM       prefill 71.10   83.68   87.64   t/s
+REM -t 5 is still the fastest, so -t 4 is a DELIBERATE give-up of ~6% decode
+REM and ~15% prefill to leave 2 of 6 cores to Windows and the desktop.
+REM This is a wall-clock knob, not a scaling one -- put it back to 5 if the
+REM desktop being responsive stops mattering.
+REM MAXT MUST track THREADS: it is the planner's ceiling, so leaving MAXT=5
+REM lets the planner quietly raise the server back to 5 threads when RAM
+REM headroom allows, which defeats the point of asking for 4.
+REM There is NO "BLAS acceleration" switch in this build and adding one
+REM cannot help: bin\cpu has no ggml-blas.dll / OpenBLAS / MKL (libomp140
+REM is OpenMP, not BLAS), and the only "blas" strings in the DLLs are a
+REM dead name in the dynamic-backend registry, one error message, and a
+REM benchmark enum.  Decode streams 1.55 GiB of weights per token, so it is
+REM memory-bus-bound and an arithmetic backend is irrelevant; prefill runs
+REM ggml's fused dequant+dot kernels for Q4_K, which no BLAS can express.
+REM The real CPU wins here are already on: -fa 1, --cache-ram 2048 and
+REM --ctx-checkpoints 32 (82.6 s cold -> 0.67 s warm on the agent prefix).
+set "THREADS=4"
+set "MAXT=4"
+REM -tb 4 too: -tb is an INDEPENDENT knob from -t, so leaving it at 5 would
+REM still pin 5 cores during every prefill and undo "4 cores".  Prefill is
+REM the half that actually wants cores (71 t/s at 4 vs 88 at 6), so this is
+REM the bigger half of the trade.  (llama-bench does NOT accept -tb, so the
+REM 71.10 pp figure above is a -t 4 run and is the closest reproducible
+REM proxy for what -tb 4 will do here.)
+set "TB=4"
 REM ubatch 512 measured faster than 2048 on this CPU.  Note this is
 REM the OPPOSITE of the MoE 8B, which needs ub 2048 (92 vs 78 t/s) so
 REM that all 32 experts get a real GEMM.  Dense model -> wash.
 set "UB=512"
-REM Working set at 16384/f16 is ~2.1 GiB (planner lfm25 table).  6 GiB
-REM cap is generous and leaves the box responsive.
-set "MAXRAM=6"
+REM Working set at 16384/f16 is ~2.1 GiB (planner lfm25 table), so a 4 GiB
+REM cap keeps ~1.9 GiB of slack.  4 is picked on purpose: this box is
+REM ASYMMETRIC dual channel -- ChannelA-DIMM0 = 16 GB, ChannelB-DIMM0 = 4 GB
+REM (both DDR4-2400, confirmed via Win32_PhysicalMemory).  The controller
+REM interleaves both channels starting at address 0, so only roughly the
+REM first 4 GiB of process address space gets full dual-channel bandwidth;
+REM past that the tail is served by the 16 GB stick alone.
+REM ponytail: that mechanism is textbook, NOT measured on this box -- and
+REM today it costs nothing anyway, because a 2.6B at 16384/f16 only needs
+REM 2.1 GiB and therefore already sits inside the interleaved window.
+REM It is a guard rail, not a speed knob, and it starts to bite at 4B and
+REM up (agent-qwen35-4b.cmd peaks at 3.8 GiB, right on the edge;
+REM agent-qwen7b.cmd peaks at 6.3 GiB, already past it).
+REM To measure instead of trusting: sweep tg96 at -t 4 while padding the
+REM working set past 4 GiB and look for the bandwidth cliff.
+REM Real fix for the asymmetry, not a script change: add a 4 GB stick to
+REM ChannelA so the pair becomes 8+8 matched.
+set "MAXRAM=4"
 set "CACHEMB=2048"      rem --cache-ram MiB. This is the single biggest
 REM                       CPU win: a 2275-token system prompt costs 82.6 s
 REM                       cold and 0.67 s warm (99.2% reused).  This is a
@@ -192,12 +225,29 @@ REM --context-shift was dropped too: LFM2.5 is a recurrent/hybrid model and
 REM llama-server prints "ctx_shift is not supported by recurrent model, it
 REM will be disabled" every launch.  -c is therefore the real window here,
 REM not a sliding-window ceiling.
-set "ARGS=-m %MODEL% --alias %ALIAS% -ngl 0 -fa 1 -c %RUN_CTX% -ctk %RUN_K% -ctv %RUN_K% -t %RUN_T% -tb %TB% -ub %UB% -n 0 --host 127.0.0.1 --port %PORT% --parallel %NPAR% --cache-ram %CACHEMB% --ctx-checkpoints %CTXCP% --jinja -rea off --temp %TEMP% --top-k %TOPK% --repeat-penalty %REPEAT%"
+REM -lm none: pin the parameters in ordinary private memory instead of
+REM leaving them file-backed.  With the default mmap the 1.55 GiB of weights
+REM land in the file cache, which Windows is free to reclaim under
+REM pressure -- that is exactly the "works fine, then stalls" case, and it
+REM is also why llama-plan.ps1 needs -CountMmap to tell the truth.
+REM -lm none makes them a real anonymous commit: never evicted as cache,
+REM never compressed, no read-back path.
+REM Measured on this box, fork b10743, llama-bench -t 4 -p 0 -n 96 -r 3:
+REM     mmap 9.53 +- 0.11   mlock 9.81 +- 0.43   none 9.95 +- 0.28  t/s
+REM none beats mmap by ~4.4% AND is the semantics we actually want.
+REM none and mlock are inside each other's noise, so pick on behaviour:
+REM none = pinned commit, still swappable under real pressure;
+REM mmap+mlock = VirtualLock, never paged out, but the server can fail to
+REM start if the lock cannot be satisfied.  For an agent server that must
+REM not stall mid-turn, take none.
+REM Cost: load is slower (full copy, not lazy paging) and the weights are no
+REM longer reclaimable, which is the trade MAXRAM=4 above now has to cover.
+set "ARGS=-m %MODEL% --alias %ALIAS% -ngl 0 -fa 1 -lm none -c %RUN_CTX% -ctk %RUN_K% -ctv %RUN_K% -t %RUN_T% -tb %TB% -ub %UB% -n 0 --host 127.0.0.1 --port %PORT% --parallel %NPAR% --cache-ram %CACHEMB% --ctx-checkpoints %CTXCP% --jinja -rea off --temp %TEMP% --top-k %TOPK% --repeat-penalty %REPEAT%"
 
 echo.
 echo [RUN] %ALIAS%  ctx=%RUN_CTX%  KV=%RUN_K%  t=%RUN_T%  tb=%TB%  ub=%UB%  port=%PORT%
-echo       decode  ~8 t/s, prefill ~67 t/s (llama-bench -t 4 -p 2048, upstream)
-echo       memory  ~1.4 GiB at 16384 f16 KV.  prefix cache ON
+echo       decode  ~9.5 t/s, prefill ~71 t/s (llama-bench -t 4, fork b10743)
+echo       memory  ~2.1 GiB at 16384 f16 KV, cap 4 GiB, -lm none (pinned).  prefix cache ON
 echo       (cache-ram=%CACHEMB% MiB, ctx-checkpoints=%CTXCP%)
 echo       THINKING model -- give every request max_tokens ^>= %MAXX%,
 echo       or it will finish_reason=length with an empty answer.
