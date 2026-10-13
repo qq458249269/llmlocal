@@ -2,10 +2,15 @@
 
 硬件：i5-8500（6 核）/ 19.9 GB RAM / **无 NVIDIA GPU**
 llama.cpp：本地 `Bonsai-demo\bin\cpu\`（PrismML fork **b10743 / commit adfffbe41**）
-**2.6B 例外**：`agent-lfm26.cmd` 现在跑的是自编译的
-**ik_llama.cpp @ `1a88bc0`（AVX2，`ik_llama-src/build/bin/`）**，FA + q8_0 对称 KV，
-同机 `llama-bench -t 4 -p 2048` 预填充 65.5 → **88.5 t/s**，decode 持平（8.6）。
-构建步骤、CLI 改名坑见 README.md 4.17。下面除 2.6B 外的数字仍是 b10743 的。
+2.6B 已于 2026-10-13 改回跑同一个 `Bonsai-demo\bin\cpu\` 引擎，`-c 16384` / f16 KV /
+`-t 5`。换引擎的理由不是速度：ik_llama.cpp 那套 IQK FlashAttention 在
+`llama-bench` 上预填充 65 → 88 t/s，但在 agent 里几乎看不见（agent 靠前缀缓存，
+几乎不预填充；decode 又是内存带宽瓶颈），而它专用的 LFM2.5 解析器把
+`parallel_tool_calls` 默认成了 false，于是模型一次发两个工具调用时会被解析成
+一个 `pattern="*\"), rg(path="` 的畸形调用，或者整轮退化成纯文本 —— agent 读到的
+是「这轮没有工具调用」然后自己退出。**上游 llama.cpp 没有这个 bug**
+（`server-common.cpp:1297` 从 chat template 的 `supports_parallel_tool_calls` 取默认值），
+所以回退到原版顺手把 bug 一起解决了。
 
 结论先讲：这台机器上**默认用 `LFM2.5-1.2B-Instruct`**（24 t/s，原生 tool_calls 3/3 通过）。
 要参数更准（尤其是文件路径）再换 `LFM2.5-2.6B`，代价是慢 2.3 倍。
@@ -78,7 +83,7 @@ hf-mirror 上 bartowski / unsloth / LiquidAI 三个仓库都**没有** IQ2/IQ3/Q
 ## 三、工具调用：原生可用
 
 不用任何 prompt hack。模型输出 Pythonic 风格调用，llama.cpp ≥ b10455 解析成
-标准 OpenAI `tool_calls`（本机 b10743 已含该解析器；ik_llama.cpp 同样自带）。
+标准 OpenAI `tool_calls`（本机 b10743 已含该解析器，并行调用默认开着）。
 
 ```bash
 curl -s http://127.0.0.1:8080/v1/chat/completions -H "Content-Type: application/json" -d '{

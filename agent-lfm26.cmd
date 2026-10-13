@@ -44,26 +44,27 @@ REM decode speed.  16384 f16 is ~0.25 GiB of KV, still 20x the real
 REM agent prefix.  2.6B native window is 128k, so this needs no RoPE
 REM extension.  Raise to 32768 only for one-shot long-document work.
 set "CTX=16384"
-REM q8_0 KV (symmetric, one fp16 scale per 32-block). Only because the
-REM engine is now ik_llama.cpp (see SERVE below): its IQK FlashAttention
-REM CPU kernels read the quantized KV directly, so there is no dequant
-REM pass in the O(n^2) path.  Measured with llama-bench -t 4 -p 2048
-REM (same model, same box):  ik_llama.cpp f16 pp 84.8 / q8_0 pp 88.5,
-REM old b10743 f16 pp 67.2 / q8_0 pp 55.2 t/s.  So on ik_llama.cpp
-REM q8_0 is FASTER than f16 while halving KV RAM; on the old build it
-REM was the other way round, which is why this line used to say f16.
-REM q4_0 measured 83.6 -- slower than q8_0 here, so do not go lower.
-set "CTK=q8_0"
-set "CTV=q8_0"
-REM -t 4 measured fastest on this 6-core box and leaves 2 cores for
-REM Windows.  Decode is memory-bus-bound, so more threads just fight
-REM for the bus (-t 6 measured 8.56 t/s vs 9.94 at t=4).
-set "THREADS=4"
+REM f16 KV, back to what the upstream engine actually wants.  Measured on
+REM this box, llama-bench -t 4 -p 2048, same 2.6B:  f16 pp 67.2 /
+REM q8_0 pp 55.2 / q4_0 worse still.  q8_0 only won under the ik_llama.cpp
+REM fork (its IQK FlashAttention reads quantized KV straight out of the
+REM attention kernel); that fork is gone, so q8_0 here would just be a
+REM 18% prefill tax.  At -c 16384 f16 KV is ~0.25 GiB -- RAM is not the
+REM reason to quantize, so do not.
+set "CTK=f16"
+set "CTV=f16"
+REM -t 5 as of 2026-10-13.  -t 4 used to measure fastest on this 6-core box
+REM (-t 6 measured 8.56 t/s vs 9.94 at t=4) and left 2 cores for Windows.
+REM 5 is the compromise: one core still free for the desktop and the pet
+REM animation, and decode is memory-bus-bound so the extra core is nearly
+REM free.  That makes it a wall-clock knob, not a scaling one -- if turns
+REM feel sluggish, put it back to 4.
+set "THREADS=5"
 set "MAXT=5"
-REM -tb 4: prefill wants every core while decode keeps -t 4.  -t and
+REM -tb 5: prefill wants every core while decode keeps -t 5.  -t and
 REM -tb are independent knobs, so use both.  (llama-bench itself does
 REM NOT accept -tb, so these two numbers cannot be reproduced with it.)
-set "TB=4"
+set "TB=5"
 REM ubatch 512 measured faster than 2048 on this CPU.  Note this is
 REM the OPPOSITE of the MoE 8B, which needs ub 2048 (92 vs 78 t/s) so
 REM that all 32 experts get a real GEMM.  Dense model -> wash.
@@ -77,10 +78,14 @@ REM                       cold and 0.67 s warm (99.2% reused).  This is a
 REM                       CAP, not a reservation -- it commits nothing
 REM                       until hit, so do NOT lower it to save RAM.
 set "CTXCP=32"          rem --ctx-checkpoints per slot
-set "CMS=256"           rem --ctx-checkpoints-interval. Default 512 is too
-REM                       coarse for an agent -- a 754-token prefix could
-REM                       never build a checkpoint.
-REM parallel slots; more than 1 splits CTX between them.  NOTE: the
+REM --ctx-checkpoints-interval does NOT exist on the upstream engine --
+REM ik_llama.cpp had it, this build does not, and passing it makes
+REM llama-server exit with "invalid argument" before it loads anything.
+REM Upstream's fixed interval (512) is coarse for an agent: a 754-token
+REM prefix can never build a checkpoint.  --cache-ram still carries the
+REM heavy lifting, so leave it alone unless a build with the interval
+REM knob comes back.
+REM parallel slots; more than 1 splits CTX between them.
 REM ">" of the old "rem >1" wording had to go: it sits OUTSIDE the
 REM quotes of the set line below, so cmd parsed it as a redirect and
 REM tried to write to a file named "1" in this directory.
@@ -100,18 +105,16 @@ set "MAXX=1400"
 REM WARM=1 prefills the frozen agent prefix in the background at
 REM start-up so the first real question skips the cold prefill.
 set "WARM=0"
-REM ik_llama.cpp built for AVX2 (see README). Its IQK FlashAttention
-REM CPU kernels take the quantized KV above straight in the attention
-REM kernel -- that is what makes q8_0 KV a prefill WIN here instead of
-REM the loss it was on b10743.  Falls back to the old engine if you
-REM have not built it yet.
-set "SERVE=%~dp0ik_llama-src\build\bin\llama-server.exe"
-if not exist "%SERVE%" (
-  echo [WARN] ik build missing: %SERVE%
-  echo        falling back to the old engine -- but rebuild it, the new
-  echo        engine is the only reason q8_0 KV is a prefill win.
-  set "SERVE=%~dp0Bonsai-demo\bin\cpu\llama-server.exe"
-)
+REM Upstream llama.cpp (Bonsai-demo/bin/cpu).  This is the llamafile build:
+REM one ggml-cpu-<microarch>.dll per ISA, runtime-dispatched, so it picks
+REM the AVX2+FMA+F16C kernels for this i5-8500 without any local build step.
+REM The ik_llama.cpp fork was dropped on 2026-10-13 -- its prefill win was
+REM real (88 vs 65 t/s on llama-bench) but invisible in the agent, and its
+REM specialized LFM2.5 parser defaulted parallel_tool_calls to FALSE, which
+-- mangled every two-call turn.  Upstream derives the same flag from the
+REM chat template (llama-cpp-src server-common.cpp:1297), so the original
+REM engine does not have that bug.  See README 4.17.
+set "SERVE=%~dp0Bonsai-demo\bin\cpu\llama-server.exe"
 REM -----------------------------------------------------------
 
 echo ================================================================
@@ -185,14 +188,17 @@ REM --jinja is MANDATORY, do not drop it: it loads the chat template
 REM baked into the GGUF (supports_tools=true).  Without it this model
 REM emits calls as plain prose and tool_calls comes back empty -- it
 REM looks exactly like "the model has no tool support".
-set "ARGS=-m %MODEL% --alias %ALIAS% -ngl 0 -fa 1 -c %RUN_CTX% -ctk %RUN_K% -ctv %RUN_K% -t %RUN_T% -tb %TB% -ub %UB% -n 0 --host 127.0.0.1 --port %PORT% --parallel %NPAR% --cache-ram %CACHEMB% --ctx-checkpoints %CTXCP% --ctx-checkpoints-interval %CMS% --context-shift on --jinja -rea off --temp %TEMP% --top-k %TOPK% --repeat-penalty %REPEAT%"
+REM --context-shift was dropped too: LFM2.5 is a recurrent/hybrid model and
+REM llama-server prints "ctx_shift is not supported by recurrent model, it
+REM will be disabled" every launch.  -c is therefore the real window here,
+REM not a sliding-window ceiling.
+set "ARGS=-m %MODEL% --alias %ALIAS% -ngl 0 -fa 1 -c %RUN_CTX% -ctk %RUN_K% -ctv %RUN_K% -t %RUN_T% -tb %TB% -ub %UB% -n 0 --host 127.0.0.1 --port %PORT% --parallel %NPAR% --cache-ram %CACHEMB% --ctx-checkpoints %CTXCP% --jinja -rea off --temp %TEMP% --top-k %TOPK% --repeat-penalty %REPEAT%"
 
 echo.
 echo [RUN] %ALIAS%  ctx=%RUN_CTX%  KV=%RUN_K%  t=%RUN_T%  tb=%TB%  ub=%UB%  port=%PORT%
-echo       decode  ~8.6 t/s, prefill ~88.5 t/s (llama-bench -t 4 -p 2048, ik engine)
-echo       memory  ~1.1 GiB at 16384 q8_0 KV (half of f16).  prefix cache ON
-echo       (cache-ram=%CACHEMB% MiB, ctx-checkpoints=%CTXCP%,
-echo        ctx-checkpoints-interval=%CMS%)
+echo       decode  ~8 t/s, prefill ~67 t/s (llama-bench -t 4 -p 2048, upstream)
+echo       memory  ~1.4 GiB at 16384 f16 KV.  prefix cache ON
+echo       (cache-ram=%CACHEMB% MiB, ctx-checkpoints=%CTXCP%)
 echo       THINKING model -- give every request max_tokens ^>= %MAXX%,
 echo       or it will finish_reason=length with an empty answer.
 echo.
