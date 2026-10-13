@@ -64,7 +64,8 @@ powershell -c "Stop-Process -Name llama-server -Force"
 
 | 启动脚本 | 模型 | 权重 | 端口 | 生成 | 预填充 | 工具调用 | 定位 |
 |---|---|---|---|---|---|---|---|
-| `agent-sakthai.cmd` | SakThai Context 0.5B Q4_K_M | 0.37 GiB | 8084 → **8085 代理** | **35.7 t/s** | 213 t/s | ✅ 4/4（经代理） | ⚠️ **最快**，但只能只读/问答（见 4.16） |
+| `agent-qwen3-06b.cmd` | Qwen3-0.6B-tools Q8_0 | 0.59 GiB | 8086 | 25.1 t/s | ~250 t/s | ✅ 3/3（原生，无需代理） | 工具调用 SFT，**但只能用 Q8_0/BF16**（K-量化坏了，见 4.18） |
+| `agent-sakthai.cmd` | SakThai Context 0.5B Q4_K_M | 0.37 GiB | 8084 → **8085 代理** |
 | `agent-minicpm5-1b.cmd` | MiniCPM5-1B Q4_K_M | 0.64 GiB | 8081 | **26.8 t/s** | 215 t/s | ❌ 拒绝 | 起草/摘要/长上下文预热 |
 | `agent-lfm12-fast.cmd` | LFM2.5-1.2B-Instruct Q4_K_M | 0.68 GiB | 8080 | **21.7 t/s** | 163 t/s | ✅ 3/3 | ⭐ **最快的 agent 底座**（2k→16k 零衰减） |
 | `agent-lfm26.cmd` | LFM2.5-2.6B Q4_K_M | 1.56 GiB | 8080 | 8.6 t/s | 65.5 t/s | ✅ 3/3 | ⭐ **agent 要写文件就用它**（路径不打错）；`-t 5` + f16 KV，引擎同其他脚本 |
@@ -93,6 +94,9 @@ powershell -c "Stop-Process -Name llama-server -Force"
 
 - **只要快 + 要调工具** → `agent-lfm12-fast.cmd`（端口 8080）。decode 21.7 t/s 且
   **2k→16k 零衰减**，16k 上下文只占 1.2 GiB，5 轮循环 16.7 s。
+- **要最省心的工具调用**（不想碰 8085 代理、不想管野格式）→ `agent-qwen3-06b.cmd`
+  （端口 8086，604 MiB，25.1 t/s，`tool_test.py` 3/3）。代价：只能用 Q8_0，且 0.6B
+  偶尔会在 `arguments` 里写废话，见 4.18。
 - **只要快** → `agent-sakthai.cmd`（**端口 8085 代理**，35.7 t/s，397 MB）。
   快 1.6 倍，工具调用经 `sakfix.py` 归一化后 `agent_loop.py` 5/5 轮全对；
   但 `fs_probe.py` 明确轮仍 FAIL，会凭空编 `/home/user/x.txt`。只读 / 分类 / 摘要，
@@ -137,6 +141,7 @@ LLMlocal/
 ├─ sak_diag.py                  ← SakThai 原始输出格式诊断（把野格式逐个量化）
 ├─ sak_tokcfg.json             ← 模型卡 tokenizer_config 存档（对照训练时的 tool 格式）
 ├─ sak_template.jinja           ← SakThai 0.5B 的严格版 chat template（挂不挂都行，见 4.16）
+├─ qwen06t_template.jinja       ← Qwen3-0.6B-tools 工具模板（**必须挂**，见 4.18）
 ├─ sakstart.sh                  ← SakThai 一次性测试启动器
 ├─ sak_qa.py                    ← 中文问答/代码分析质量（不给工具）
 ├─ sak_eval.py                  ← 工具调用 + 中文分析 4 用例，带 stop 对照
@@ -711,6 +716,44 @@ system）实测同样 0/8，temp 降到 0.1 也一样。结论是**格式不稳�
 pi 的 bash 工具）里 `c++.exe --version` 正常，但编译任何文件都静默返回 1、零错误输出 ——
 cc1plus 起不来，看起来像编译器坏了。
 
+### 4.18 Qwen3-0.6B-tools：第一个不用代理的 0.6B，外加一个上游坏量化
+
+`iromu/Qwen3-0.6B-tools` = Qwen3-0.6B + 一层 LoRA(dim 32) 的工具调用 SFT，模型卡自报
+BF16 greedy 下 274 条验证样本 **99.3% 发出 tool_call**（基座只有 17.5%）。启动：
+`agent-qwen3-06b.cmd`（端口 **8086**，别名 `qwen3-0.6b-tools`）。
+
+**它是唯一一个不需要 `sakfix.py` 的小模型。** 它吐的是标准 `<tool_call>` JSON
+（tag 里带 U+200B，llama.cpp 原生认），`tool_test.py` **3/3**：两个工具用例工具名和参数
+全对，不该调工具时也不乱调。SakThai 0.5B 每次换一个野格式才需要归一化代理（4.16），
+这里不需要 —— 那套代理代码在这个模型上是纯负债。
+
+| 量化 | 权重 | tg128 @ `-t 4` | 同 prompt greedy 的 tool_call |
+|---|---|---|---|
+| **Q8_0**（用这个） | 604 MiB | **25.1 t/s** | ✅ `{"name":"get_weather","arguments":{"city":"Shanghai"}}` |
+| BF16 | 1.12 GiB | ~19 t/s | ✅ 同上 |
+| ~~UD-Q4_K_XL~~ | 386 MiB | ~28 t/s | ❌ 退化成散文循环 |
+| ~~Q4_K_M~~ | 372 MiB | 28.8 t/s | ❌ 输出退化（`sh, sh, h, sh`），`tool_test.py` 1/3 |
+
+**坑 1：上游的 K-量化是坏的，不是本机问题。** 同一个 prompt、同一模板、greedy 解码，
+Q8_0 和 BF16 干净给出 tool_call，Q4_K_M 直接退化，UD-Q4_K_XL 一路写散文。
+0.6B + 336 步 LoRA 的权重分布本来就脆，再叠 imatrix 量化就塌了。
+**不要按「省内存就上 Q4」的直觉动这个模型** —— 真要试，先跑一遍 `tool_test.py`。
+
+**坑 2：必须挂 `qwen06t_template.jinja`。** GGUF 内嵌的是 qwen3 官方工具模板，
+它只在 `enable_thinking is false` 时插空 think 前缀；不插的话模型开场思考、
+`</think>` 泄漏进答案、然后停不下来（`finish_reason=length`）。
+本可以用 `--chat-template-kwargs '{"enable_thinking":false}'`，但那个 JSON 在
+`cmd.exe → Start-Process -ArgumentList` 两层引号里会被吃掉，报
+`json parse error at line 1, column 2`。所以直接把模板从 GGUF dump 出来改那一行落盘。
+
+**坑 3：它仍然是 0.6B。** 中文工具 prompt 干净；英文 prompt 下它能在 `arguments` 里
+一路写废话（`"/etc/hosts"` 后面跟一百个 0），而且**照样被解析成 tool_calls** ——
+静默错误，最难查。客户端契约：`temp 0.1` + `stop=["", "\nuser", "\nsystem"]`
++ 收紧 `max_tokens`，产出的任何路径都当不可信输入。
+
+KV 112 KiB/token f16（28 层 × 8 kv heads × 128 dim × 2 × 2 B）→ 8k ctx = 0.88 GiB f16 /
+0.22 GiB q4_0；原生窗口 40960，8k 不需要 RoPE 扩展。
+
 ## 5. 工具脚本
 
 | 脚本 | 用途 |
@@ -753,7 +796,8 @@ bash dl.sh <owner/repo> <file.gguf> models [分片数]
 
 | 用途 | repo | 文件 | 大小 |
 |---|---|---|---|
-| **最快的只读/问答底座**（需挂 `sak_template.jinja`，见 4.16） | `Nanthasit/sakthai-context-0.5b-merged` | `sakthai-0.5b-Q4_K_M.gguf` | 379 MiB |
+| **工具调用 SFT·0.6B**（只能 Q8_0/BF16，见 4.18） | `iromu/Qwen3-0.6B-tools-GGUF` | `Qwen3-0.6B-tools-Q8_0.gguf` | 610 MiB |
+| **最快的只读/问答底座**（需挂 `sak_template.jinja`，见 4.16） |
 | **agent 首选**（8B-A1B） | `unsloth/LFM2.5-8B-A1B-GGUF` | `LFM2.5-8B-A1B-UD-Q4_K_M.gguf` | 4.95 GiB |
 | agent 首选·省内存版 | `unsloth/LFM2.5-8B-A1B-GGUF` | `LFM2.5-8B-A1B-UD-IQ2_M.gguf` | 2.56 GiB |
 | **最快的 agent 底座** | `LiquidAI/LFM2.5-1.2B-Instruct-GGUF` | `LFM2.5-1.2B-Instruct-Q4_K_M.gguf` | 695 MiB |
