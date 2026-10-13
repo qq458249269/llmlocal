@@ -8,7 +8,15 @@ rem         parses tool_calls natively -- NO sakfix.py proxy needed
 rem         (unlike sakthai-0.5b, which wraps calls in random tags).
 rem         tool_test.py: 3/3 (both tool cases correct + no false call).
 rem
-rem  CEILING: it is still a 0.6B. Chinese tool prompts are clean; an English
+rem  PI (C:\Users\yinxuehao\.pi\agent\models.json, provider "qwen"):
+rem    maxTokens 256 + samplingParams.stop=["<|im_end|>","\nuser",...
+rem    MUST stay. With maxTokens 4096 and no stop, one pi turn is 2129
+rem    tokens of "## Summary" on repeat, stopReason=length, then pi's
+rem    compaction fires on overflow and re-runs -> the infinite loop.
+rem    Re-measure with:  pi --mode json --model qwen/qwen3-0.6b-tools
+rem                         --tools find --print "<prompt>" > ev.jsonl
+rem
+rem  CEILING: it is still a 0.6B.
 rem  one can ramble INSIDE the arguments and still parse ("/etc/hosts" +
 rem  a hundred digits). temp 0.1 + stop strings + a tight max_tokens is the
 rem  client contract; treat any emitted path as unverified input.
@@ -60,7 +68,7 @@ set "LOWPRI=1"
 set "TEMP=0.1"           rem tool JSON must be exact; validation used greedy
 set "TOPP=0.8"
 set "TOPK=20"
-set "REPEAT=1.05"
+set "REPEAT=1.15"        rem 1.05 was NOT enough: pi + no stop -> 2000-token degenerate loop
 set "MAXTOK=512"         rem client-side cap; a 0.6B never stops on its own
 set "SERVE=%~dp0Bonsai-demo\bin\cpu\llama-server.exe"
 rem -----------------------------------------------------------
@@ -90,7 +98,7 @@ if not errorlevel 1 echo [WARN] port %PORT% already in use -- stop that server f
 rem --jinja renders TPL (it carries the GGUF's <tools> contract and the
 rem empty-think prefix). --chat-template takes an INLINE string;
 rem --chat-template-file takes the path.
-set "ARGS=-m %MODEL% --alias %ALIAS% -ngl 0 -fa on -c %CTX% -ctk %CTK% -ctv %CTK% -t %THREADS% -tb %TBATCH% -ub %UBATCH% -n 0 --host 127.0.0.1 --port %PORT% --parallel %NPAR% --cache-ram %CACHEMB% --ctx-checkpoints %CTXCP% --checkpoint-min-step %CPMINSTEP% --cache-reuse %CPCREUSE% --cache-idle-slots --context-shift --jinja --chat-template-file %TPL% -rea off --temp %TEMP% --top-p %TOPP% --top-k %TOPK% --repeat-penalty %REPEAT%"
+set "ARGS=-m %MODEL% --alias %ALIAS% -ngl 0 -fa on -c %CTX% -ctk %CTK% -ctv %CTK% -t %THREADS% -tb %TBATCH% -ub %UBATCH% -n 0 --host 127.0.0.1 --port %PORT% --parallel %NPAR% --cache-ram %CACHEMB% --ctx-checkpoints %CTXCP% --checkpoint-min-step %CPMINSTEP% --cache-reuse %CPCREUSE% --cache-idle-slots --context-shift --jinja --chat-template-file %TPL% -rea off --temp %TEMP% --top-p %TOPP% --top-k %TOPK% --repeat-penalty %REPEAT% --repeat-last-n 128"
 
 if "%LOWPRI%"=="1" (
     powershell -NoProfile -Command "$p=Start-Process -FilePath '%SERVE%' -ArgumentList '%ARGS%' -NoNewWindow -PassThru; $p.PriorityClass='BelowNormal'; $p.WaitForExit()"

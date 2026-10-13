@@ -751,6 +751,27 @@ Q8_0 和 BF16 干净给出 tool_call，Q4_K_M 直接退化，UD-Q4_K_XL 一路�
 静默错误，最难查。客户端契约：`temp 0.1` + `stop=["", "\nuser", "\nsystem"]`
 + 收紧 `max_tokens`，产出的任何路径都当不可信输入。
 
+**接 pi：`~/.pi/agent/models.json` 的 provider `qwen`（8086）**
+
+```json
+{ "id": "qwen3-0.6b-tools", "contextWindow": 8192, "maxTokens": 256,
+  "samplingParams": { "temperature": 0.1, "top_p": 0.8, "top_k": 20,
+    "repeat_penalty": 1.15,
+    "stop": ["<|im_end|>", "\nuser", "\nsystem", "\nassistant", "<tool_response>"] } }
+```
+
+`maxTokens` 从 4096 降到 256 + `stop` 不是省事，是**止住无限循环**。改之前实测：
+一轮 2129 个 token 的 `## Summary` 复读，`stopReason=length`，然后 pi 的 compaction
+因为 overflow 触发并重跑 —— 用户看到的就是「一直用 find 搜，搜到输出耗尽」。
+改之后：一轮、256 token、无 compaction、`agent_settled`。
+（pi 的 `samplingParams` 确实会透传 `stop` —— 把 `stop` 设成 `["Summary"]` 探针，
+`stopReason` 立刻从 `length` 变 `stop`，输出 109 token。）
+
+但 loop 只是症状：1659 token 的 pi 系统提示喂进去，它吐的是
+`Find files by case-insensitive globalse...` 这种碎句，**一个工具调用都发不出来**。
+当 agent 底座还是用 `agent-lfm12-fast.cmd`（8080）；这个模型适合短 prompt 的
+问答和格式演示。
+
 KV 112 KiB/token f16（28 层 × 8 kv heads × 128 dim × 2 × 2 B）→ 8k ctx = 0.88 GiB f16 /
 0.22 GiB q4_0；原生窗口 40960，8k 不需要 RoPE 扩展。
 
