@@ -5,7 +5,7 @@ param(
   [int]$HeadroomPct = 10,         # keep this much RAM + CPU free
   [int]$MaxRam = 8,               # HARD cap for the model process, GiB
   [int]$MaxThreads = 4,           # HARD cap for llama threads
-  [string]$Size = "8b",           # peak table: 8b | 17b | lfm25 | lfm12 | q7b | q30b | ornith9b | ornith35b | lfm258b
+[string]$Size = "8b",           # peak table: 8b | 17b | lfm25 | lfm12 | q7b | q30b | q35_4b | ornith9b | ornith35b | lfm258b
   [string]$Only = "",             # print just this key's value (for .cmd parsing)
   [switch]$CountMmap              # treat the mmapped weights as reclaimable (see note)
 )
@@ -136,7 +136,25 @@ $PEAK_ORNITH9B = @{
   "131072|f16"   = 8.3;  "131072|q8_0"  = 6.7;  "131072|q4_0"  = 5.7
   "262144|f16"   = 11.3; "262144|q8_0"  = 8.7;  "262144|q4_0"  = 6.7
 }
-# Ornith-1.0-35B MoE IQ2_M (11.66 GB file, 40 layers / only 10 full attention,
+# Qwen3.5-4B Q4_K_M (3.01 GB file = 2.81 GiB weights, qwen35 arch) --
+# SAME KV profile as the 9B above, verified against the HF config.json:
+#   text_config: 32 layers, full_attention_interval 4 -> only 8 full-attn
+#   layers (4 KV heads x 256 dim); the other 24 are linear_attention, whose
+#   recurrent state is CONSTANT (~50 MiB total) and never grows with -c.
+#   => 8 x 4 x 256 x 2 x 2 B = 32 KiB/token f16, native max_position 262144
+# So this table is ORNITH9B shifted down by the 2.31 GiB weight difference
+# (5.12 - 2.81).  ponytail: DERIVED, not measured on this box -- every value
+# carries ~0.1 GiB of slack, same as the hand-written ones above.  Replace it
+# with real numbers after one `./bench_decode.py` run (see agent-qwen35-4b.cmd).
+$PEAK_Q35_4B = @{
+  "8192|f16"     = 3.2;  "8192|q8_0"    = 3.0;  "8192|q4_0"    = 2.9
+  "16384|f16"    = 3.4;  "16384|q8_0"   = 3.1;  "16384|q4_0"   = 2.9
+  "32768|f16"    = 3.8;  "32768|q8_0"   = 3.2;  "32768|q4_0"   = 2.9
+  "65536|f16"    = 4.5;  "65536|q8_0"   = 3.6;  "65536|q4_0"   = 3.1
+  "131072|f16"   = 6.0;  "131072|q8_0"  = 4.4;  "131072|q4_0"  = 3.4
+  "262144|f16"   = 9.0;  "262144|q8_0"  = 6.4;  "262144|q4_0"  = 4.4
+}
+# Ornith-1.0-35B MoE IQ2_M (11.66 GB file,
 # 2 KV heads x 256 dim -> 20 KiB/token f16 = 0.38x the 7B's 56).  Kept for
 # reference: at ~11.7 GiB peak it does NOT fit alongside Windows on this box.
 $PEAK_ORNITH35B = @{
@@ -149,6 +167,7 @@ $PEAK_ORNITH35B = @{
 if ($Size -eq "17b")   { $PEAK = $PEAK_17B;   $WEIGHTS = 0.5;  $MMAP = 0.43 }
 elseif ($Size -eq "q7b")  { $PEAK = $PEAK_Q7B;  $WEIGHTS = 4.36 }
 elseif ($Size -eq "q30b") { $PEAK = $PEAK_Q30B; $WEIGHTS = 9.65 }
+elseif ($Size -eq "q35_4b") { $PEAK = $PEAK_Q35_4B; $WEIGHTS = 2.81 }
 elseif ($Size -eq "ornith9b")  { $PEAK = $PEAK_ORNITH9B;  $WEIGHTS = 5.12 }
 elseif ($Size -eq "ornith35b") { $PEAK = $PEAK_ORNITH35B; $WEIGHTS = 11.15 }
 elseif ($Size -eq "lfm25") { $PEAK = $PEAK_LFM25; $WEIGHTS = 1.7 }
