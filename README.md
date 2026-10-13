@@ -64,7 +64,7 @@ powershell -c "Stop-Process -Name llama-server -Force"
 
 | 启动脚本 | 模型 | 权重 | 端口 | 生成 | 预填充 | 工具调用 | 定位 |
 |---|---|---|---|---|---|---|---|
-| `agent-qwen3-06b.cmd` | Qwen3-0.6B-tools Q8_0 | 0.59 GiB | 8086 | 25.1 t/s | ~250 t/s | ✅ 3/3（原生，无需代理） | 工具调用 SFT，**但只能用 Q8_0/BF16**（K-量化坏了，见 4.18） |
+| `agent-qwen3-06b.cmd` | Qwen3-0.6B-tools Q8_0 | 0.59 GiB | 8086 | 25.1 t/s | ~250 t/s | ✅ 3/3（原生，无需代理） | ⚠️ 工具调用 SFT，**不能接 pi**（长系统提示下发不出调用，已从 models.json 摘除；且只能用 Q8_0/BF16，K-量化坏了，见 4.18） |
 | `agent-sakthai.cmd` | SakThai Context 0.5B Q4_K_M | 0.37 GiB | 8084 → **8085 代理** |
 | `agent-minicpm5-1b.cmd` | MiniCPM5-1B Q4_K_M | 0.64 GiB | 8081 | **26.8 t/s** | 215 t/s | ❌ 拒绝 | 起草/摘要/长上下文预热 |
 | `agent-lfm12-fast.cmd` | LFM2.5-1.2B-Instruct Q4_K_M | 0.68 GiB | 8080 | **21.7 t/s** | 163 t/s | ✅ 3/3 | ⭐ **最快的 agent 底座**（2k→16k 零衰减） |
@@ -751,7 +751,7 @@ Q8_0 和 BF16 干净给出 tool_call，Q4_K_M 直接退化，UD-Q4_K_XL 一路�
 静默错误，最难查。客户端契约：`temp 0.1` + `stop=["", "\nuser", "\nsystem"]`
 + 收紧 `max_tokens`，产出的任何路径都当不可信输入。
 
-**接 pi：`~/.pi/agent/models.json` 的 provider `qwen`（8086）**
+**接 pi：不可用，2026-10-13 已从 `models.json` 摘除。** 下面是当时的配置和为什么删掉。
 
 ```json
 { "id": "qwen3-0.6b-tools", "contextWindow": 8192, "maxTokens": 256,
@@ -769,8 +769,11 @@ Q8_0 和 BF16 干净给出 tool_call，Q4_K_M 直接退化，UD-Q4_K_XL 一路�
 
 但 loop 只是症状：1659 token 的 pi 系统提示喂进去，它吐的是
 `Find files by case-insensitive globalse...` 这种碎句，**一个工具调用都发不出来**。
-当 agent 底座还是用 `agent-lfm12-fast.cmd`（8080）；这个模型适合短 prompt 的
-问答和格式演示。
+`maxTokens` 降到 256 之后 256 个 token 就 `stopReason=length`，也就是说这个模型在 pi
+这种长系统提示下**干不了活**，留着只会让人以为是自己哪里配错了。
+`~/.pi/agent/models.json` 的 provider `qwen`（8086）已删除 —— 只保留
+`agent-qwen3-06b.cmd` 跑 `tool_test.py` 和短 prompt 问答、当格式演示。
+当 agent 底座用 `agent-lfm12-fast.cmd`（8080）。
 
 KV 112 KiB/token f16（28 层 × 8 kv heads × 128 dim × 2 × 2 B）→ 8k ctx = 0.88 GiB f16 /
 0.22 GiB q4_0；原生窗口 40960，8k 不需要 RoPE 扩展。

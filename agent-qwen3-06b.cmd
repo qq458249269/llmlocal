@@ -8,13 +8,12 @@ rem         parses tool_calls natively -- NO sakfix.py proxy needed
 rem         (unlike sakthai-0.5b, which wraps calls in random tags).
 rem         tool_test.py: 3/3 (both tool cases correct + no false call).
 rem
-rem  PI (C:\Users\yinxuehao\.pi\agent\models.json, provider "qwen"):
-rem    maxTokens 256 + samplingParams.stop=["<|im_end|>","\nuser",...
-rem    MUST stay. With maxTokens 4096 and no stop, one pi turn is 2129
-rem    tokens of "## Summary" on repeat, stopReason=length, then pi's
-rem    compaction fires on overflow and re-runs -> the infinite loop.
-rem    Re-measure with:  pi --mode json --model qwen/qwen3-0.6b-tools
-rem                         --tools find --print "<prompt>" > ev.jsonl
+rem  PI: NOT USABLE.  The provider "qwen" (8086) was REMOVED from
+rem  ~/.pi/agent/models.json on2026-10-13.  With pi's 1659-token agent
+rem  system prompt this model emits broken prose and ZERO tool calls;
+rem  with maxTokens 256 it dies at stopReason=length every turn.  Keep
+rem  it for tool_test.py / short-prompt QA only.  Agent work goes to
+rem  agent-lfm12-fast.cmd on 8080.  Full numbers in README 4.18.
 rem
 rem  CEILING: it is still a 0.6B.
 rem  one can ramble INSIDE the arguments and still parse ("/etc/hosts" +
